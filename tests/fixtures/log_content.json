@@ -1,0 +1,37 @@
+[
+  {
+    "logLine": "Starting compilation...",
+    "logLevel": "INFO",
+    "timestamp": 1700000010000
+  },
+  {
+    "logLine": "go build -o hawkeye ./cmd/...",
+    "logLevel": "INFO",
+    "timestamp": 1700000011000
+  },
+  {
+    "logLine": "Build successful",
+    "logLevel": "INFO",
+    "timestamp": 1700000012000
+  },
+  {
+    "logLine": "Running unit tests...",
+    "logLevel": "INFO",
+    "timestamp": 1700000120000
+  },
+  {
+    "logLine": "WARN: Deprecated API usage detected",
+    "logLevel": "WARN",
+    "timestamp": 1700000130000
+  },
+  {
+    "logLine": "All 42 tests passed",
+    "logLevel": "INFO",
+    "timestamp": 1700000200000
+  },
+  {
+    "logLine": "Error: connection refused to database",
+    "logLevel": "ERROR",
+    "timestamp": 1700000210000
+  }
+]

@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+dist/
+build/
+.vscode/mcp.json
+
+# DFIN context symlink (local only, not tracked)
+.dfin-context

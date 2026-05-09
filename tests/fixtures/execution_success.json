@@ -1,0 +1,89 @@
+{
+  "status": "SUCCESS",
+  "data": {
+    "pipelineExecutionSummary": {
+      "planExecutionId": "exec_success_001",
+      "pipelineIdentifier": "Build_And_Deploy",
+      "name": "Build And Deploy",
+      "status": "Success",
+      "startTs": 1700000000000,
+      "endTs": 1700000600000,
+      "runSequence": 42,
+      "executionTriggerInfo": {
+        "triggerType": "MANUAL",
+        "triggeredBy": {
+          "identifier": "srinath.ekbote",
+          "uuid": "user-uuid-001"
+        }
+      },
+      "gitDetails": {
+        "branch": "main",
+        "repoName": "hawkeye"
+      },
+      "tags": [
+        {"key": "env", "value": "prod"},
+        {"key": "team", "value": "sre"}
+      ],
+      "layoutNodeMap": {
+        "stage_build_001": {
+          "name": "Build",
+          "nodeIdentifier": "Build",
+          "status": "Success",
+          "nodeType": "CI",
+          "startTs": 1700000000000,
+          "endTs": 1700000300000,
+          "edgeLayoutList": {"nextIds": ["stage_deploy_001"]}
+        },
+        "stage_deploy_001": {
+          "name": "Deploy to Prod",
+          "nodeIdentifier": "Deploy_to_Prod",
+          "status": "Success",
+          "nodeType": "CD",
+          "startTs": 1700000300000,
+          "endTs": 1700000600000,
+          "edgeLayoutList": {"nextIds": []}
+        }
+      },
+      "startingNodeId": "stage_build_001"
+    },
+    "executionGraph": {
+      "nodeMap": {
+        "step_compile_001": {
+          "name": "Compile",
+          "identifier": "Compile",
+          "stepType": "Run",
+          "status": "Success",
+          "startTs": 1700000010000,
+          "endTs": 1700000120000,
+          "baseFqn": "pipeline.stages.Build.spec.execution.steps.Compile",
+          "parentStepId": "stage_build_001",
+          "nodeGroup": "STEP"
+        },
+        "step_test_001": {
+          "name": "Unit Tests",
+          "identifier": "Unit_Tests",
+          "stepType": "Run",
+          "status": "Success",
+          "startTs": 1700000120000,
+          "endTs": 1700000250000,
+          "baseFqn": "pipeline.stages.Build.spec.execution.steps.Unit_Tests",
+          "parentStepId": "stage_build_001",
+          "nodeGroup": "STEP"
+        },
+        "step_deploy_001": {
+          "name": "Rolling Deploy",
+          "identifier": "Rolling_Deploy",
+          "stepType": "K8sRollingDeploy",
+          "status": "Success",
+          "startTs": 1700000310000,
+          "endTs": 1700000590000,
+          "baseFqn": "pipeline.stages.Deploy_to_Prod.spec.execution.steps.Rolling_Deploy",
+          "parentStepId": "stage_deploy_001",
+          "nodeGroup": "STEP",
+          "delegateInfoList": [{"name": "delegate-prod-001", "id": "del-001"}]
+        }
+      },
+      "rootNodeId": "root_001"
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+    "servers": {
+        "hawkeye": {
+            "type": "stdio",
+            "command": "python",
+            "args": ["main.py"],
+            "cwd": "${workspaceFolder}"
+        }
+    }
+}

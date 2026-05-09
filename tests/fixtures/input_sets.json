@@ -1,0 +1,18 @@
+[
+  {
+    "identifier": "default_input_set",
+    "name": "Default Input Set",
+    "pipeline_identifier": "Build_And_Deploy",
+    "input_set_yaml": "inputSet:\n  identifier: default_input_set\n  pipeline:\n    identifier: Build_And_Deploy\n    stages:\n      - stage:\n          identifier: Build\n          spec:\n            execution:\n              steps:\n                - step:\n                    identifier: Compile\n                    spec:\n                      envVariables:\n                        ENV: prod\n",
+    "created": 1695000000000,
+    "updated": 1699000000000
+  },
+  {
+    "identifier": "staging_input_set",
+    "name": "Staging Input Set",
+    "pipeline_identifier": "Build_And_Deploy",
+    "input_set_yaml": "inputSet:\n  identifier: staging_input_set\n  pipeline:\n    identifier: Build_And_Deploy\n    stages:\n      - stage:\n          identifier: Deploy_to_Prod\n          spec:\n            environment: staging\n",
+    "created": 1696000000000,
+    "updated": 1698500000000
+  }
+]

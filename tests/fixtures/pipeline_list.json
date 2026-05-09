@@ -1,0 +1,47 @@
+[
+  {
+    "identifier": "Build_And_Deploy",
+    "name": "Build And Deploy",
+    "description": "CI/CD pipeline for the Hawkeye project",
+    "modules": ["CI", "CD"],
+    "recent_execution_info": [
+      {
+        "status": "Success",
+        "startTs": 1700000000000
+      }
+    ],
+    "git_details": {
+      "store_type": "REMOTE",
+      "repo_name": "hawkeye"
+    },
+    "created": 1690000000000,
+    "updated": 1700000000000
+  },
+  {
+    "identifier": "Nightly_Tests",
+    "name": "Nightly Tests",
+    "description": "Scheduled nightly integration tests",
+    "modules": ["CI"],
+    "recent_execution_info": [
+      {
+        "status": "Failed",
+        "startTs": 1699900000000
+      }
+    ],
+    "git_details": {
+      "store_type": "INLINE"
+    },
+    "created": 1691000000000,
+    "updated": 1699900000000
+  },
+  {
+    "identifier": "Infrastructure_Deploy",
+    "name": "Infrastructure Deploy",
+    "description": null,
+    "modules": ["CD"],
+    "recent_execution_info": [],
+    "store_type": "INLINE",
+    "created": 1692000000000,
+    "updated": 1698000000000
+  }
+]

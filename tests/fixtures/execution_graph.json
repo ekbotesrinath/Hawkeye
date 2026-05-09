@@ -1,0 +1,70 @@
+{
+  "nodeMap": {
+    "node_root": {
+      "name": "Pipeline",
+      "identifier": "Build_And_Deploy",
+      "stepType": "PIPELINE",
+      "status": "Success",
+      "startTs": 1700000000000,
+      "endTs": 1700000600000,
+      "baseFqn": "pipeline"
+    },
+    "node_stage_build": {
+      "name": "Build",
+      "identifier": "Build",
+      "stepType": "STAGE",
+      "status": "Success",
+      "startTs": 1700000000000,
+      "endTs": 1700000300000,
+      "baseFqn": "pipeline.stages.Build"
+    },
+    "node_step_compile": {
+      "name": "Compile",
+      "identifier": "Compile",
+      "stepType": "Run",
+      "status": "Success",
+      "startTs": 1700000010000,
+      "endTs": 1700000120000,
+      "baseFqn": "pipeline.stages.Build.spec.execution.steps.Compile",
+      "outcomes": {"output": {"outputVariables": {"IMAGE_TAG": "v1.2.3"}}}
+    },
+    "node_step_test": {
+      "name": "Unit Tests",
+      "identifier": "Unit_Tests",
+      "stepType": "Run",
+      "status": "Success",
+      "startTs": 1700000120000,
+      "endTs": 1700000250000,
+      "baseFqn": "pipeline.stages.Build.spec.execution.steps.Unit_Tests"
+    },
+    "node_stage_deploy": {
+      "name": "Deploy to Prod",
+      "identifier": "Deploy_to_Prod",
+      "stepType": "STAGE",
+      "status": "Success",
+      "startTs": 1700000300000,
+      "endTs": 1700000600000,
+      "baseFqn": "pipeline.stages.Deploy_to_Prod"
+    },
+    "node_step_deploy": {
+      "name": "K8s Rolling Deploy",
+      "identifier": "Rolling_Deploy",
+      "stepType": "K8sRollingDeploy",
+      "status": "Success",
+      "startTs": 1700000310000,
+      "endTs": 1700000590000,
+      "baseFqn": "pipeline.stages.Deploy_to_Prod.spec.execution.steps.Rolling_Deploy",
+      "delegateInfoList": [{"name": "delegate-prod-001"}]
+    },
+    "node_parallel_group": {
+      "name": "Parallel Tests",
+      "identifier": "Parallel_Tests",
+      "stepType": "FORK",
+      "status": "Success",
+      "startTs": 1700000120000,
+      "endTs": 1700000250000,
+      "baseFqn": "pipeline.stages.Build.spec.execution.steps.Parallel_Tests"
+    }
+  },
+  "rootNodeId": "node_root"
+}

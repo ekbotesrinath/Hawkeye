@@ -1,0 +1,75 @@
+# Hawkeye — Pipeline Observability MCP Server
+
+## Quick Reference
+- Python 3.12, `.venv`
+- `make test` — run full test suite
+- `make server` — start MCP server
+- `make connect` — configure Harness credentials
+- All tools are read-only
+- Tests must always pass before committing
+
+## Architecture
+```
+tools/*.py → providers/base.py → providers/harness/*.py → Harness API
+```
+
+- `tools/` — MCP tool definitions (execution, pipeline, investigation, account)
+- `core/` — models, sanitizer, audit logger, cache, fuzzy matching
+- `providers/` — abstract base + Harness implementation
+- `config/` — multi-tenant profile management (stored in `~/.hawkeye/`)
+
+## Tools (19 total)
+
+### Execution (5)
+- `hawkeye_get_execution` — full execution detail from ID or URL
+- `hawkeye_get_stage_detail` — step-by-step stage breakdown
+- `hawkeye_get_step_logs` — raw log output (last 200 lines, secrets masked)
+- `hawkeye_get_execution_inputs` — runtime input YAML
+- `hawkeye_list_recent_executions` — recent runs with status filter
+- `hawkeye_get_all_stages` — all stages with steps in one call
+- `hawkeye_get_child_execution` — follow child pipeline executions
+- `hawkeye_check_approvals` — check pending/completed/rejected approval gates
+
+### Pipeline (3)
+- `hawkeye_get_pipeline_definition` — pipeline YAML (supports branch)
+- `hawkeye_list_pipelines` — list/search pipelines by name or module
+- `hawkeye_get_input_sets` — available input sets for a pipeline
+
+### Investigation (4)
+- `hawkeye_diagnose` — unified diagnosis tool (summary/full mode, optional console logs)
+- `hawkeye_investigate_failure` — parallel multi-signal failure triage
+- `hawkeye_compare_executions` — diff two executions
+- `hawkeye_get_failure_pattern` — recurring failure analysis
+
+### Account (2)
+- `hawkeye_connect_account` — switch active profile
+- `hawkeye_list_profiles` — list configured profiles
+
+### Delegate (2)
+- `hawkeye_list_delegates` — list all delegate groups with health status
+- `hawkeye_check_delegate` — check health of a specific delegate (fuzzy match)
+
+### Connector (2)
+- `hawkeye_list_connectors` — list connectors with connectivity status
+- `hawkeye_check_connector` — test connectivity of a specific connector
+
+### Utility (1)
+- `ping` — health check
+
+## Rules
+- Never write to pipeline provider APIs (read-only enforced at transport)
+- Never log or expose API tokens
+- All tool outputs must be sanitized via `core/sanitizer.py`
+- All tool invocations must be audit logged via `core/audit.py`
+- Use `tools/_helpers.py:run_tool()` wrapper for every tool to ensure audit + sanitize
+- Fuzzy name resolution (`core/fuzzy.py`) resolves partial pipeline names
+- Profiles and tokens stored in `~/.hawkeye/` via keyring
+
+## Configuration
+
+### Toolset Filtering (`HAWKEYE_TOOLSETS`)
+Comma-separated list of toolset names to register. Default (unset/empty): all.
+- Toolsets: `execution`, `investigation`, `pipeline`, `account`, `deeplinks`, `terraform`, `delegates`, `connectors`
+- `account` + `ping` are always registered
+- Unknown names are warned and ignored
+- Example: `HAWKEYE_TOOLSETS=execution,investigation` — only load execution + investigation + account + ping

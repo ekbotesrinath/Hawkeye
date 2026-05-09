@@ -1,0 +1,86 @@
+{
+  "status": "SUCCESS",
+  "data": {
+    "pipelineExecutionSummary": {
+      "planExecutionId": "exec_failed_002",
+      "pipelineIdentifier": "Build_And_Deploy",
+      "name": "Build And Deploy",
+      "status": "Failed",
+      "startTs": 1700100000000,
+      "endTs": 1700100400000,
+      "runSequence": 43,
+      "executionTriggerInfo": {
+        "triggerType": "WEBHOOK",
+        "triggeredBy": {
+          "identifier": "github-webhook",
+          "uuid": "trigger-uuid-002"
+        }
+      },
+      "gitDetails": {
+        "branch": "feature/broken",
+        "repoName": "hawkeye"
+      },
+      "tags": [],
+      "layoutNodeMap": {
+        "stage_build_002": {
+          "name": "Build",
+          "nodeIdentifier": "Build",
+          "status": "Failed",
+          "nodeType": "CI",
+          "startTs": 1700100000000,
+          "endTs": 1700100400000,
+          "failureInfo": {
+            "message": "Build failed: compilation error in main.go",
+            "failureTypeList": ["APPLICATION_FAILURE"],
+            "responseMessages": [
+              {"message": "Exit code 1"}
+            ]
+          },
+          "edgeLayoutList": {"nextIds": ["stage_deploy_002"]}
+        },
+        "stage_deploy_002": {
+          "name": "Deploy to Prod",
+          "nodeIdentifier": "Deploy_to_Prod",
+          "status": "NotStarted",
+          "nodeType": "CD",
+          "startTs": null,
+          "endTs": null,
+          "edgeLayoutList": {"nextIds": []}
+        }
+      },
+      "startingNodeId": "stage_build_002"
+    },
+    "executionGraph": {
+      "nodeMap": {
+        "step_compile_002": {
+          "name": "Compile",
+          "identifier": "Compile",
+          "stepType": "Run",
+          "status": "Failed",
+          "startTs": 1700100010000,
+          "endTs": 1700100350000,
+          "baseFqn": "pipeline.stages.Build.spec.execution.steps.Compile",
+          "parentStepId": "stage_build_002",
+          "nodeGroup": "STEP",
+          "failureInfo": {
+            "message": "Exit code 1 — compilation error",
+            "failureTypeList": ["APPLICATION_FAILURE"],
+            "responseMessages": [
+              {"message": "go build failed"}
+            ]
+          }
+        },
+        "step_test_002": {
+          "name": "Unit Tests",
+          "identifier": "Unit_Tests",
+          "stepType": "Run",
+          "status": "NotStarted",
+          "baseFqn": "pipeline.stages.Build.spec.execution.steps.Unit_Tests",
+          "parentStepId": "stage_build_002",
+          "nodeGroup": "STEP"
+        }
+      },
+      "rootNodeId": "root_002"
+    }
+  }
+}
