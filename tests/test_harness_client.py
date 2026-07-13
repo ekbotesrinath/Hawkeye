@@ -694,6 +694,58 @@ class TestListRecentExecutions:
         assert results == []
 
 
+class TestListProjectExecutions:
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_no_pipeline_filter_in_body(self, client: HarnessClient) -> None:
+        """Project-wide listing must not filter by pipelineIdentifiers."""
+        route = respx.post(
+            "https://app.harness.io/pipeline/api/pipelines/execution/summary"
+        ).mock(
+            return_value=httpx.Response(
+                200, json={"status": "SUCCESS", "data": {"content": []}}
+            )
+        )
+        results = await client.list_project_executions(limit=25)
+        assert results == []
+        body = json.loads(route.calls[0].request.content)
+        assert body == {"filterType": "PipelineExecution"}
+        assert dict(route.calls[0].request.url.params)["size"] == "25"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_parses_module_info(self, client: HarnessClient) -> None:
+        body = {
+            "status": "SUCCESS",
+            "data": {
+                "content": [
+                    {
+                        "pipelineExecutionSummary": {
+                            "planExecutionId": "ex1",
+                            "pipelineIdentifier": "deploy_api",
+                            "name": "Deploy API",
+                            "status": "Success",
+                            "runSequence": 42,
+                            "moduleInfo": {
+                                "cd": {
+                                    "serviceIdentifiers": ["api_service"],
+                                    "envIdentifiers": ["prod"],
+                                }
+                            },
+                        }
+                    }
+                ]
+            },
+        }
+        respx.post(
+            "https://app.harness.io/pipeline/api/pipelines/execution/summary"
+        ).mock(return_value=httpx.Response(200, json=body))
+
+        results = await client.list_project_executions()
+        assert results[0].service_identifiers == ["api_service"]
+        assert results[0].env_identifiers == ["prod"]
+
+
 class TestListPipelines:
     @respx.mock
     @pytest.mark.asyncio

@@ -16,6 +16,7 @@ import httpx
 from core.cache import TTLCache
 from core.credentials import get_token
 from core.models import (
+    TERMINAL_STATUSES,
     ConnectorInfo,
     DelegateInfo,
     EnvironmentSummary,
@@ -89,17 +90,9 @@ _LIST_CACHE_TTL = 60  # seconds — listings change rarely within a session
 _EXEC_CACHE_TTL = 600  # seconds — completed executions are immutable
 _PIPELINE_DEF_CACHE_TTL = 300
 
-# Statuses after which an execution can no longer change
-_TERMINAL_STATUSES = frozenset({
-    ExecutionStatus.SUCCESS,
-    ExecutionStatus.FAILED,
-    ExecutionStatus.ERRORED,
-    ExecutionStatus.ABORTED,
-    ExecutionStatus.EXPIRED,
-    ExecutionStatus.APPROVAL_REJECTED,
-    ExecutionStatus.ABORTED_BY_FREEZE,
-    ExecutionStatus.IGNORE_FAILED,
-})
+# Statuses after which an execution can no longer change (canonical set
+# lives in core.models)
+_TERMINAL_STATUSES = TERMINAL_STATUSES
 
 # Read-only enforcement: POST is only permitted for the Harness endpoints
 # that are semantically reads (list/summary/test queries).  Everything else
@@ -590,6 +583,35 @@ class HarnessClient(PipelineProvider):
             "filterType": "PipelineExecution",
             "pipelineIdentifiers": [pipeline_id],
         }
+        if status is not None:
+            body["status"] = [status.value]
+        raw = await self._request(
+            "POST",
+            "/pipeline/api/pipelines/execution/summary",
+            params={"page": "0", "size": str(limit)},
+            json_body=body,
+        )
+        data = self._unwrap_legacy(raw)
+        return parse_recent_executions(
+            data,
+            base_url=self._profile.base_url,
+            account_id=self._profile.account_id,
+            org=self._profile.org_identifier,
+            project=self._profile.project_identifier,
+        )
+
+    async def list_project_executions(
+        self,
+        limit: int = 50,
+        status: ExecutionStatus | None = None,
+    ) -> list[PipelineExecution]:
+        """List recent executions across all pipelines in the project.
+
+        Same summary endpoint as :meth:`list_recent_executions` but without
+        a pipeline filter, so health/deployment tools get a project-wide
+        view in one call.
+        """
+        body: dict[str, Any] = {"filterType": "PipelineExecution"}
         if status is not None:
             body["status"] = [status.value]
         raw = await self._request(

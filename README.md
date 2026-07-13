@@ -91,6 +91,10 @@ make server
 | 33 | `hawkeye_list_services` | Environment | List services in the project |
 | 34 | `hawkeye_get_service` | Environment | Service YAML — manifests, artifacts, variables (fuzzy match) |
 | 35 | `ping` | Utility | Health check |
+| 36 | `hawkeye_watch_execution` | Investigation | Poll a running execution until it completes, then auto-diagnose failures |
+| 37 | `hawkeye_get_flaky_steps` | Investigation | Step-level flakiness rates across recent runs (flaky vs consistently broken) |
+| 38 | `hawkeye_health_overview` | Health | One-call triage: delegates + connectors + 24h failures + pending approvals |
+| 39 | `hawkeye_deployment_map` | Health | Service × environment matrix of latest successful CD deploys |
 
 All tools are **read-only**, **parallel-safe**, **audit-logged**, and **secret-sanitized**.
 
@@ -166,7 +170,8 @@ hawkeye/
 │   ├── _gather.py          # Shared investigation orchestration
 │   ├── executions.py       # 8 execution tools
 │   ├── pipelines.py        # 3 pipeline tools
-│   ├── investigate.py      # 4 investigation tools
+│   ├── investigate.py      # 6 investigation tools
+│   ├── health.py           # 2 health tools (overview + deployment map)
 │   ├── templates.py        # 2 template tools
 │   ├── secrets.py          # 2 secret metadata tools
 │   ├── environments.py     # 6 environment/service tools
@@ -231,7 +236,7 @@ window focused on the tools relevant to your workflow.
 | Toolset | Tools Included |
 |---------|---------------|
 | `execution` | get_execution, get_stage_detail, get_step_logs, get_execution_inputs, list_recent_executions, get_all_stages, get_child_execution, check_approvals |
-| `investigation` | diagnose, investigate_failure, compare_executions, get_failure_pattern |
+| `investigation` | diagnose, investigate_failure, compare_executions, get_failure_pattern, watch_execution, get_flaky_steps |
 | `pipeline` | list_pipelines, get_pipeline_definition, get_input_sets |
 | `templates` | list_templates, get_template |
 | `account` | connect_account, list_profiles *(always registered)* |
@@ -241,6 +246,7 @@ window focused on the tools relevant to your workflow.
 | `connectors` | list_connectors, check_connector |
 | `secrets` | list_secrets, check_secret |
 | `environments` | list_environments, get_environment, list_infrastructures, get_infrastructure, list_services, get_service |
+| `health` | health_overview, deployment_map |
 
 **Behavior:**
 - **Not set / empty / `all`** — all toolsets are registered (default, backward-compatible).

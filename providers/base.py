@@ -85,6 +85,18 @@ class PipelineProvider(ABC):
         """List recent executions for a pipeline."""
 
     @abstractmethod
+    async def list_project_executions(
+        self,
+        limit: int = 50,
+        status: ExecutionStatus | None = None,
+    ) -> list[PipelineExecution]:
+        """List recent executions across ALL pipelines in the project.
+
+        Used by health/deployment overview tools that need a project-wide
+        view rather than a single pipeline's history.
+        """
+
+    @abstractmethod
     async def get_pipeline_definition(self, pipeline_id: str, branch: str | None = None) -> dict:  # type: ignore[type-arg]
         """Get pipeline YAML/definition."""
 

@@ -1,10 +1,12 @@
 """Investigation tools — the flagship intelligence tools.
 
-4 tools:
+6 tools:
 - hawkeye_diagnose (unified diagnosis — summary or full mode with optional console logs)
 - hawkeye_investigate_failure (parallel multi-signal failure triage)
 - hawkeye_compare_executions (diff two pipeline runs)
 - hawkeye_get_failure_pattern (recurring failure detection)
+- hawkeye_watch_execution (poll a running execution until it completes, then diagnose)
+- hawkeye_get_flaky_steps (step-level flakiness analysis across recent runs)
 """
 
 from __future__ import annotations
@@ -12,11 +14,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 
 from mcp.server.fastmcp import FastMCP
 
 from core.models import (
     FAILED_STATUSES,
+    SKIPPED_STATUSES,
+    TERMINAL_STATUSES,
     ExecutionStatus,
     PipelineExecution,
     StageExecution,
@@ -279,6 +284,124 @@ def register_investigation_tools(mcp: FastMCP) -> None:
             return _format_failure_pattern(pipeline_id, executions)
 
         return await run_tool("hawkeye_get_failure_pattern", params, _run())
+
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
+    async def hawkeye_watch_execution(
+        execution_id: str = "",
+        url: str = "",
+        poll_seconds: int = 30,
+        timeout_minutes: int = 15,
+    ) -> str:
+        """Watch a running execution until it completes, then report.
+
+        Polls the execution every *poll_seconds* (10-300, default 30) until
+        it reaches a terminal status or *timeout_minutes* elapses (1-120,
+        default 15). On success returns a completion summary; on failure
+        returns the full Hawkeye failure investigation automatically.
+        Ideal for "watch this deploy and tell me if it breaks".
+
+        Accepts either an execution_id or a Harness UI URL.
+        """
+        params = {
+            "execution_id": execution_id,
+            "url": url,
+            "poll_seconds": poll_seconds,
+            "timeout_minutes": timeout_minutes,
+        }
+
+        async def _run() -> str:
+            eid = execution_id
+            if url:
+                parsed = parse_harness_url(url)
+                if parsed.execution_id:
+                    eid = parsed.execution_id
+            if not eid:
+                return "Error: Provide either execution_id or a Harness execution URL."
+
+            interval = clamp_limit(poll_seconds, lo=10, hi=300, default=30)
+            timeout_min = clamp_limit(timeout_minutes, lo=1, hi=120, default=15)
+            deadline = time.monotonic() + timeout_min * 60
+
+            provider = await get_provider()
+            started = time.monotonic()
+            polls = 0
+            execution = await provider.get_execution(eid)
+
+            while (
+                execution.status not in TERMINAL_STATUSES
+                and time.monotonic() + interval <= deadline
+            ):
+                await asyncio.sleep(interval)
+                polls += 1
+                execution = await provider.get_execution(eid)
+
+            watched = _format_watch_duration(time.monotonic() - started)
+
+            if execution.status not in TERMINAL_STATUSES:
+                return _format_watch_timeout(execution, watched, timeout_min, polls)
+
+            if execution.status == ExecutionStatus.SUCCESS:
+                return _format_watch_success(execution, watched, polls)
+
+            # Terminal but not successful — run the full investigation
+            failed_steps = _collect_failed_steps(execution)
+            history, _raw_node_map, step_details, child_findings = (
+                await gather_investigation(provider, eid, execution)
+            )
+            report = _format_investigation(
+                execution, failed_steps, step_details, history, child_findings
+            )
+            header = (
+                f"## ⏱️ Watch complete: {execution.status.value.upper()} "
+                f"after {watched} ({polls} poll(s))\n\n"
+            )
+            return header + report
+
+        return await run_tool("hawkeye_watch_execution", params, _run())
+
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
+    async def hawkeye_get_flaky_steps(
+        pipeline_id: str,
+        limit: int = 15,
+    ) -> str:
+        """Detect flaky steps — steps that fail intermittently across runs.
+
+        Fetches full step-level detail for the last *limit* runs (max 20)
+        of a pipeline and computes per-step failure rates. Distinguishes
+        FLAKY steps (fail sometimes — e.g. "this test step fails 30% of
+        the time regardless of branch") from CONSISTENTLY BROKEN steps
+        (fail every time they run), and notes whether failures are
+        branch-specific.
+        """
+        params = {"pipeline_id": pipeline_id, "limit": limit}
+
+        async def _run() -> str:
+            safe_limit = clamp_limit(limit, hi=20, default=15)
+            resolved_id = await resolve_pipeline_id(pipeline_id)
+            provider = await get_provider()
+            runs = await provider.list_recent_executions(resolved_id, limit=safe_limit)
+            if not runs:
+                return f"No executions found for pipeline `{resolved_id}`."
+
+            # Summary listings have no step detail — fetch full executions
+            # in parallel (client concurrency cap + terminal-status cache
+            # keep this cheap on repeat calls).
+            detail_results = await asyncio.gather(
+                *[provider.get_execution(r.plan_execution_id) for r in runs],
+                return_exceptions=True,
+            )
+            executions = [
+                d for d in detail_results if isinstance(d, PipelineExecution)
+            ]
+            if not executions:
+                return (
+                    f"Could not fetch step-level detail for any of the "
+                    f"{len(runs)} recent runs of `{resolved_id}`."
+                )
+
+            return _format_flaky_steps(resolved_id, executions)
+
+        return await run_tool("hawkeye_get_flaky_steps", params, _run())
 
 
 # ------------------------------------------------------------------
@@ -922,6 +1045,213 @@ def _duration_ms(stage: StageExecution) -> int | None:
     if stage.start_ts is None or stage.end_ts is None:
         return None
     return stage.end_ts - stage.start_ts
+
+
+# ------------------------------------------------------------------
+# Watch execution formatters
+# ------------------------------------------------------------------
+
+
+def _format_watch_duration(seconds: float) -> str:
+    """Human form of how long the watch ran."""
+    total = int(seconds)
+    if total < 60:
+        return f"{total}s"
+    return f"{total // 60}m {total % 60}s"
+
+
+def _format_watch_success(
+    execution: PipelineExecution, watched: str, polls: int
+) -> str:
+    duration = format_duration_ms(execution.start_ts, execution.end_ts)
+    lines = [
+        f"## ✅ Watch complete: {execution.pipeline_name} "
+        f"(Run #{execution.run_sequence}) SUCCEEDED",
+        f"Pipeline duration: {duration} | Watched for: {watched} ({polls} poll(s))",
+        "",
+        "### Stages",
+    ]
+    for stage in execution.stages:
+        if stage.status in SKIPPED_STATUSES:
+            continue
+        dur = format_duration_ms(stage.start_ts, stage.end_ts)
+        lines.append(f"  {status_icon(stage.status)} {stage.name} ({dur})")
+    skipped = sum(1 for s in execution.stages if s.status in SKIPPED_STATUSES)
+    if skipped:
+        lines.append(f"  ⏭️ {skipped} stage(s) skipped")
+    if execution.execution_url:
+        lines.append("")
+        lines.append(f"Harness: {execution.execution_url}")
+    return "\n".join(lines)
+
+
+def _format_watch_timeout(
+    execution: PipelineExecution, watched: str, timeout_min: int, polls: int
+) -> str:
+    running_stage = next(
+        (s for s in execution.stages if s.status == ExecutionStatus.RUNNING), None
+    )
+    lines = [
+        f"## ⏱️ Watch timed out after {watched} "
+        f"({polls} poll(s), limit {timeout_min}m)",
+        f"{execution.pipeline_name} (Run #{execution.run_sequence}) is still "
+        f"{status_icon(execution.status)} {execution.status.value}.",
+    ]
+    if running_stage:
+        dur = format_duration_ms(running_stage.start_ts, None)
+        lines.append(f"Currently in stage: **{running_stage.name}** ({dur} elapsed)")
+    if execution.status in WAITING_STATUSES_FOR_WATCH:
+        lines.append(
+            "⚠️ The execution appears to be waiting on human action — "
+            "check `hawkeye_check_approvals`."
+        )
+    lines.append("")
+    lines.append("Re-run `hawkeye_watch_execution` to keep watching.")
+    if execution.execution_url:
+        lines.append(f"Harness: {execution.execution_url}")
+    return "\n".join(lines)
+
+
+WAITING_STATUSES_FOR_WATCH = frozenset({
+    ExecutionStatus.APPROVAL_WAITING,
+    ExecutionStatus.INTERVENTION_WAITING,
+    ExecutionStatus.INPUT_WAITING,
+})
+
+
+# ------------------------------------------------------------------
+# Flaky step analysis
+# ------------------------------------------------------------------
+
+
+class _StepStats:
+    """Accumulated cross-run statistics for a single pipeline step."""
+
+    __slots__ = ("stage_name", "step_name", "step_type", "runs", "fails",
+                 "branches_run", "branches_failed", "errors")
+
+    def __init__(self, stage_name: str, step_name: str, step_type: str) -> None:
+        self.stage_name = stage_name
+        self.step_name = step_name
+        self.step_type = step_type
+        self.runs = 0
+        self.fails = 0
+        self.branches_run: set[str] = set()
+        self.branches_failed: set[str] = set()
+        self.errors: dict[str, int] = {}
+
+
+def _collect_step_stats(
+    executions: list[PipelineExecution],
+) -> dict[tuple[str, str], _StepStats]:
+    """Aggregate per-step run/failure counts across executions."""
+    stats: dict[tuple[str, str], _StepStats] = {}
+    for ex in executions:
+        branch = ex.branch or "(no branch)"
+        for stage in ex.stages:
+            if stage.status in SKIPPED_STATUSES:
+                continue
+            for step in stage.steps:
+                if step.status in SKIPPED_STATUSES:
+                    continue
+                key = (stage.identifier, step.identifier or step.name)
+                rec = stats.get(key)
+                if rec is None:
+                    rec = _StepStats(stage.name, step.name, step.step_type)
+                    stats[key] = rec
+                rec.runs += 1
+                rec.branches_run.add(branch)
+                if step.status in FAILED_STATUSES:
+                    rec.fails += 1
+                    rec.branches_failed.add(branch)
+                    if step.failure_info and step.failure_info.message:
+                        msg = step.failure_info.message
+                        rec.errors[msg] = rec.errors.get(msg, 0) + 1
+    return stats
+
+
+def _branch_note(rec: _StepStats) -> str:
+    """Describe whether failures are branch-specific."""
+    if not rec.branches_failed:
+        return "—"
+    if len(rec.branches_failed) > 1:
+        return f"{len(rec.branches_failed)} branches (regardless of branch)"
+    only = next(iter(rec.branches_failed))
+    if len(rec.branches_run) > 1:
+        return f"only on `{only}`"
+    return f"`{only}`"
+
+
+def _format_flaky_steps(
+    pipeline_id: str,
+    executions: list[PipelineExecution],
+) -> str:
+    stats = _collect_step_stats(executions)
+
+    flaky = sorted(
+        (r for r in stats.values() if 0 < r.fails < r.runs and r.runs >= 3),
+        key=lambda r: r.fails / r.runs,
+        reverse=True,
+    )
+    broken = sorted(
+        (r for r in stats.values() if r.fails == r.runs and r.runs >= 2),
+        key=lambda r: r.runs,
+        reverse=True,
+    )
+
+    name = executions[0].pipeline_name if executions else pipeline_id
+    lines = [
+        f"## Flaky Step Analysis: {name} (last {len(executions)} runs, "
+        f"{len(stats)} distinct steps)",
+        "",
+    ]
+
+    if flaky:
+        lines.append("### 🎲 Flaky steps (fail intermittently)")
+        lines.append("| Step | Stage | Fail rate | Failures | Branch pattern | Common error |")
+        lines.append("|------|-------|-----------|----------|----------------|--------------|")
+        for r in flaky:
+            rate = r.fails / r.runs * 100
+            common = max(r.errors, key=lambda k: r.errors[k]) if r.errors else "—"
+            if len(common) > 60:
+                common = common[:57] + "..."
+            lines.append(
+                f"| **{r.step_name}** | {r.stage_name} | {rate:.0f}% "
+                f"({r.fails}/{r.runs}) | {r.fails} | {_branch_note(r)} | {common} |"
+            )
+        lines.append("")
+
+    if broken:
+        lines.append("### 💥 Consistently broken steps (fail every run)")
+        lines.append("| Step | Stage | Runs | Branch pattern | Common error |")
+        lines.append("|------|-------|------|----------------|--------------|")
+        for r in broken:
+            common = max(r.errors, key=lambda k: r.errors[k]) if r.errors else "—"
+            if len(common) > 60:
+                common = common[:57] + "..."
+            lines.append(
+                f"| **{r.step_name}** | {r.stage_name} | {r.runs} "
+                f"| {_branch_note(r)} | {common} |"
+            )
+        lines.append("")
+
+    if not flaky and not broken:
+        total_failing = sum(1 for r in stats.values() if r.fails)
+        if total_failing:
+            lines.append(
+                f"No flaky or consistently-broken steps detected — "
+                f"{total_failing} step(s) failed only once each in this window."
+            )
+        else:
+            lines.append("✅ No step failures at all in this window.")
+    else:
+        lines.append(
+            "💡 Flaky = fails sometimes under the same conditions (ran ≥3×, "
+            "failed at least once but not always). Investigate a specific "
+            "failure with `hawkeye_diagnose`."
+        )
+
+    return "\n".join(lines)
 
 
 # ------------------------------------------------------------------

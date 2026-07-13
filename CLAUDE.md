@@ -26,7 +26,7 @@ tools/*.py → tools/_gather.py → providers/base.py → providers/harness/*.py
 - `providers/harness/graph_search.py` — step matching + console-log extraction
 - `config/` — multi-tenant profile management (stored in `~/.hawkeye/`)
 
-## Tools (35 total)
+## Tools (39 total)
 
 ### Execution (8)
 - `hawkeye_get_execution` — full execution detail from ID or URL
@@ -47,11 +47,17 @@ tools/*.py → tools/_gather.py → providers/base.py → providers/harness/*.py
 - `hawkeye_get_template` — template YAML by identifier (fuzzy match, optional version, project/org/account scope)
 - `hawkeye_list_templates` — list/search templates by name or type (Step, Stage, Pipeline, …)
 
-### Investigation (4)
+### Investigation (6)
 - `hawkeye_diagnose` — unified diagnosis tool (summary/full mode, optional console logs)
 - `hawkeye_investigate_failure` — parallel multi-signal failure triage
 - `hawkeye_compare_executions` — diff two executions
 - `hawkeye_get_failure_pattern` — recurring failure analysis
+- `hawkeye_watch_execution` — poll a running execution until terminal, then auto-diagnose
+- `hawkeye_get_flaky_steps` — step-level flakiness rates across recent runs (flaky vs consistently broken, branch-specific notes)
+
+### Health (2)
+- `hawkeye_health_overview` — one-call triage: disconnected delegates + failing connectors + last-24h failures + waiting-on-human executions + running
+- `hawkeye_deployment_map` — service × environment matrix of latest successful CD deploys
 
 ### Account (2)
 - `hawkeye_connect_account` — switch active profile
@@ -110,7 +116,7 @@ tools/*.py → tools/_gather.py → providers/base.py → providers/harness/*.py
 
 ### Toolset Filtering (`HAWKEYE_TOOLSETS`)
 Comma-separated list of toolset names to register. Default (unset/empty): all.
-- Toolsets: `execution`, `investigation`, `pipeline`, `templates`, `account`, `deeplinks`, `terraform`, `delegates`, `connectors`, `secrets`, `environments`
+- Toolsets: `execution`, `investigation`, `pipeline`, `templates`, `account`, `deeplinks`, `terraform`, `delegates`, `connectors`, `secrets`, `environments`, `health`
 - Singular/plural spellings both accepted (e.g. `executions`, `secret`)
 - `account` + `ping` are always registered
 - Unknown names are warned and ignored

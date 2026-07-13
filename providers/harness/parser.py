@@ -57,6 +57,7 @@ def parse_execution_detail(
 
     execution_id = summary.get("planExecutionId", "")
     url = build_execution_url(base_url, account_id, org, project, pipeline_id, execution_id)
+    service_ids, env_ids = _parse_cd_module_info(summary)
 
     return PipelineExecution(
         plan_execution_id=execution_id,
@@ -73,6 +74,8 @@ def parse_execution_detail(
         stages=stages,
         execution_input_yaml=summary.get("inputSetYaml"),
         tags=_parse_tags(summary.get("tags", [])),
+        service_identifiers=service_ids,
+        env_identifiers=env_ids,
     )
 
 
@@ -85,6 +88,32 @@ def _parse_triggered_by(summary: dict[str, Any]) -> str:
     ei = summary.get("executionTriggerInfo", {})
     tb = ei.get("triggeredBy", {})
     return str(tb.get("identifier", tb.get("uuid", "")))
+
+
+def _parse_cd_module_info(summary: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """Extract CD service/environment identifiers from a summary's moduleInfo.
+
+    Returns ``(service_identifiers, env_identifiers)``.  Handles both the
+    ``serviceIdentifiers``/``envIdentifiers`` and legacy ``serviceIds``/
+    ``envIds`` key spellings; non-CD executions return empty lists.
+    """
+    module_info = summary.get("moduleInfo")
+    if not isinstance(module_info, dict):
+        return [], []
+    cd_info = module_info.get("cd")
+    if not isinstance(cd_info, dict):
+        return [], []
+
+    def _string_list(*keys: str) -> list[str]:
+        for key in keys:
+            value = cd_info.get(key)
+            if isinstance(value, list):
+                return [str(v) for v in value if v]
+        return []
+
+    services = _string_list("serviceIdentifiers", "serviceIds")
+    envs = _string_list("envIdentifiers", "envIds")
+    return services, envs
 
 
 def _parse_tags(raw_tags: Any) -> dict[str, str]:
@@ -1132,6 +1161,7 @@ def parse_recent_executions(
             if isinstance(layout, dict) and layout
             else []
         )
+        service_ids, env_ids = _parse_cd_module_info(summary)
 
         results.append(
             PipelineExecution(
@@ -1153,6 +1183,8 @@ def parse_recent_executions(
                 stages=stages,
                 execution_input_yaml=None,
                 tags=_parse_tags(summary.get("tags", [])),
+                service_identifiers=service_ids,
+                env_identifiers=env_ids,
             )
         )
     return results

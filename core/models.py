@@ -55,6 +55,25 @@ SKIPPED_STATUSES: frozenset[ExecutionStatus] = frozenset({
     ExecutionStatus.NOT_STARTED,
 })
 
+# Statuses after which an execution can no longer change
+TERMINAL_STATUSES: frozenset[ExecutionStatus] = frozenset({
+    ExecutionStatus.SUCCESS,
+    ExecutionStatus.FAILED,
+    ExecutionStatus.ERRORED,
+    ExecutionStatus.ABORTED,
+    ExecutionStatus.EXPIRED,
+    ExecutionStatus.APPROVAL_REJECTED,
+    ExecutionStatus.ABORTED_BY_FREEZE,
+    ExecutionStatus.IGNORE_FAILED,
+})
+
+# Statuses that indicate a human needs to act
+WAITING_ON_HUMAN_STATUSES: frozenset[ExecutionStatus] = frozenset({
+    ExecutionStatus.APPROVAL_WAITING,
+    ExecutionStatus.INTERVENTION_WAITING,
+    ExecutionStatus.INPUT_WAITING,
+})
+
 
 class FailureInfo(BaseModel):
     """Failure details for a stage or step."""
@@ -145,6 +164,14 @@ class PipelineExecution(BaseModel):
         default=None, description="Input YAML used for this execution"
     )
     tags: dict[str, str] = Field(default_factory=dict, description="User-defined tags")
+    service_identifiers: list[str] = Field(
+        default_factory=list,
+        description="CD services deployed by this execution (from moduleInfo)",
+    )
+    env_identifiers: list[str] = Field(
+        default_factory=list,
+        description="CD environments targeted by this execution (from moduleInfo)",
+    )
 
 
 class PipelineSummary(BaseModel):

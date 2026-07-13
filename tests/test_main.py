@@ -95,14 +95,28 @@ class TestServerInit:
         assert "hawkeye_list_services" in tools
         assert "hawkeye_get_service" in tools
 
+    def test_health_tools_registered(self) -> None:
+        from main import mcp
+
+        tools = mcp._tool_manager._tools
+        assert "hawkeye_health_overview" in tools
+        assert "hawkeye_deployment_map" in tools
+
+    def test_watch_and_flaky_tools_registered(self) -> None:
+        from main import mcp
+
+        tools = mcp._tool_manager._tools
+        assert "hawkeye_watch_execution" in tools
+        assert "hawkeye_get_flaky_steps" in tools
+
     def test_all_tools_registered(self) -> None:
         from main import mcp
 
         tools = mcp._tool_manager._tools
-        # 8 execution + 3 pipeline + 2 template + 2 account + 4 investigation
+        # 8 execution + 3 pipeline + 2 template + 2 account + 6 investigation
         # + 1 deeplink + 2 terraform + 2 delegate + 2 connector + 2 secrets
-        # + 6 environments + 1 ping
-        assert len(tools) == 35
+        # + 6 environments + 2 health + 1 ping
+        assert len(tools) == 39
 
     @pytest.mark.asyncio
     async def test_ping_returns_status(self) -> None:
@@ -141,8 +155,8 @@ class TestToolsetFiltering:
         monkeypatch.delenv("HAWKEYE_TOOLSETS", raising=False)
         server = create_server()
         tools = server._tool_manager._tools
-        # All 35 tools should be present
-        assert len(tools) == 35
+        # All 39 tools should be present
+        assert len(tools) == 39
         assert "hawkeye_get_execution" in tools
         assert "hawkeye_diagnose" in tools
         assert "hawkeye_list_pipelines" in tools
@@ -216,7 +230,7 @@ class TestToolsetFiltering:
         monkeypatch.setenv("HAWKEYE_TOOLSETS", "all")
         server = create_server()
         tools = server._tool_manager._tools
-        assert len(tools) == 35
+        assert len(tools) == 39
 
     def test_toolset_invalid_name_ignored(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
@@ -266,7 +280,7 @@ class TestToolsetFiltering:
         monkeypatch.setenv("HAWKEYE_TOOLSETS", "")
         server = create_server()
         tools = server._tool_manager._tools
-        assert len(tools) == 35
+        assert len(tools) == 39
 
     def test_toolset_explicit_parameter_overrides_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Passing toolsets= to create_server() bypasses the env var."""

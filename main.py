@@ -27,6 +27,7 @@ from tools.deeplinks import register_deeplink_tools
 from tools.delegates import register_delegate_tools
 from tools.environments import register_environment_tools
 from tools.executions import register_execution_tools
+from tools.health import register_health_tools
 from tools.investigate import register_investigation_tools
 from tools.pipelines import register_pipeline_tools
 from tools.secrets import register_secret_tools
@@ -58,6 +59,7 @@ _TOOLSET_REGISTRY: dict[str, Callable[[FastMCP], None]] = {
     "connectors": register_connector_tools,
     "secrets": register_secret_tools,
     "environments": register_environment_tools,
+    "health": register_health_tools,
 }
 
 _ALWAYS_REGISTERED: set[str] = {"account"}
