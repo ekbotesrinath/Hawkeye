@@ -24,9 +24,12 @@ from tools.account import register_account_tools
 from tools.connectors import register_connector_tools
 from tools.deeplinks import register_deeplink_tools
 from tools.delegates import register_delegate_tools
+from tools.environments import register_environment_tools
 from tools.executions import register_execution_tools
 from tools.investigate import register_investigation_tools
 from tools.pipelines import register_pipeline_tools
+from tools.secrets import register_secret_tools
+from tools.templates import register_template_tools
 from tools.terraform import register_terraform_tools
 
 # Configure logging to stderr (stdout is reserved for MCP stdio transport)
@@ -46,11 +49,14 @@ _TOOLSET_REGISTRY: dict[str, Callable[[FastMCP], None]] = {
     "execution": register_execution_tools,
     "investigation": register_investigation_tools,
     "pipeline": register_pipeline_tools,
+    "templates": register_template_tools,
     "account": register_account_tools,
     "deeplinks": register_deeplink_tools,
     "terraform": register_terraform_tools,
     "delegates": register_delegate_tools,
     "connectors": register_connector_tools,
+    "secrets": register_secret_tools,
+    "environments": register_environment_tools,
 }
 
 _ALWAYS_REGISTERED: set[str] = {"account"}

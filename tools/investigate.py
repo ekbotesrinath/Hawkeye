@@ -456,7 +456,11 @@ async def _follow_child_pipelines(
     raw_node_map: dict | None,
     provider: object,
 ) -> dict[str, dict]:
-    """Follow child pipeline executions for failed Pipeline-type stages.
+    """Follow child pipeline executions for Pipeline-type (chained) stages.
+
+    ALL executed Pipeline-type stages are followed — orchestrator pipelines
+    need child visibility whether the run failed or succeeded.  Deep step
+    details are fetched only for failed steps inside each child.
 
     Returns a dict mapping stage_id -> child execution findings:
     {
@@ -470,22 +474,26 @@ async def _follow_child_pipelines(
     """
     findings: dict[str, dict] = {}
 
-    # Find failed Pipeline-type stages
-    failed_pipeline_stages = [
+    # Find executed Pipeline-type stages (skipped/not-started ones have no child)
+    pipeline_stages = [
         s for s in execution.stages
-        if s.status in _FAILED_STATUSES
-        and _is_pipeline_step_type(s.stage_type)
+        if _is_pipeline_step_type(s.stage_type)
+        and s.status not in (ExecutionStatus.SKIPPED, ExecutionStatus.NOT_STARTED)
     ]
 
-    if not failed_pipeline_stages:
-        logger.debug("follow_child: no failed Pipeline-type stages")
+    if not pipeline_stages:
+        logger.debug("follow_child: no Pipeline-type stages")
         return findings
 
     # Phase 1: Collect all child executions and their failed step details
-    for stage in failed_pipeline_stages:
+    for stage in pipeline_stages:
         try:
-            # Try to extract child execution ID from raw graph
-            child_id = _find_child_execution_id(stage, raw_node_map)
+            # The layout node carries the authoritative child execution ID
+            # (stepDetails.childPipelineExecutionDetails); fall back to
+            # scanning the raw execution graph.
+            child_id = stage.child_execution_id or _find_child_execution_id(
+                stage, raw_node_map
+            )
             logger.debug("follow_child: stage=%s, child_id=%s", stage.name, child_id)
             if not child_id:
                 continue
@@ -823,6 +831,21 @@ def _format_investigation(
                             )
                             if cs.failure_info and cs.failure_info.message:
                                 lines.append(f'  Error: "{cs.failure_info.message}"')
+                elif child_ex.stages:
+                    # Healthy child — compact overview of executed stages,
+                    # with skipped stages collapsed to a single count
+                    skipped_statuses = (ExecutionStatus.SKIPPED, ExecutionStatus.NOT_STARTED)
+                    skipped_count = 0
+                    for cs in child_ex.stages:
+                        if cs.status in skipped_statuses:
+                            skipped_count += 1
+                            continue
+                        cs_dur = format_duration_ms(cs.start_ts, cs.end_ts)
+                        lines.append(
+                            f"  {status_icon(cs.status)} {cs.name} ({cs_dur})"
+                        )
+                    if skipped_count:
+                        lines.append(f"  ⏭️ {skipped_count} stage(s) skipped")
 
                 # Show child step details
                 if child_details:
@@ -1168,13 +1191,13 @@ def _timing_delta(s1: StageExecution, s2: StageExecution) -> str:
     diff = dur2 - dur1
     if abs(diff) < 1000:
         return "~same"
-    sign = "+" if diff > 0 else ""
+    sign = "+" if diff > 0 else "-"
     total_seconds = int(abs(diff)) // 1000
     if total_seconds < 60:
-        return f"{sign}{diff // 1000}s"
+        return f"{sign}{total_seconds}s"
     minutes = total_seconds // 60
     seconds = total_seconds % 60
-    return f"{sign}{'-' if diff < 0 else ''}{minutes}m {seconds}s" if diff < 0 else f"+{minutes}m {seconds}s"
+    return f"{sign}{minutes}m {seconds}s"
 
 
 def _duration_ms(stage: StageExecution) -> int | None:

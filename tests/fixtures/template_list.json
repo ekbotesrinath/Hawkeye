@@ -1,0 +1,76 @@
+{
+  "status": "SUCCESS",
+  "data": {
+    "content": [
+      {
+        "accountId": "acc_test_123",
+        "orgIdentifier": "default",
+        "projectIdentifier": "hawkeye_project",
+        "identifier": "deploy_step_template",
+        "name": "Deploy Step Template",
+        "description": "Reusable K8s rolling deploy step",
+        "tags": {
+          "team": "platform"
+        },
+        "yaml": "template:\n  name: Deploy Step Template\n  identifier: deploy_step_template\n  versionLabel: v2\n  type: Step\n  spec:\n    type: K8sRollingDeploy\n    spec:\n      skipDryRun: false\n",
+        "versionLabel": "v2",
+        "templateEntityType": "Step",
+        "childType": "K8sRollingDeploy",
+        "templateScope": "project",
+        "version": 3,
+        "gitDetails": {},
+        "lastUpdatedAt": 1700000000000,
+        "storeType": "INLINE",
+        "stableTemplate": true
+      },
+      {
+        "accountId": "acc_test_123",
+        "orgIdentifier": "default",
+        "projectIdentifier": "hawkeye_project",
+        "identifier": "build_stage_template",
+        "name": "Build Stage Template",
+        "description": "Standard CI build stage",
+        "tags": {},
+        "yaml": "template:\n  name: Build Stage Template\n  identifier: build_stage_template\n  versionLabel: v1\n  type: Stage\n",
+        "versionLabel": "v1",
+        "templateEntityType": "Stage",
+        "childType": "CI",
+        "templateScope": "project",
+        "version": 1,
+        "gitDetails": {},
+        "lastUpdatedAt": 1699000000000,
+        "storeType": "INLINE",
+        "stableTemplate": false
+      },
+      {
+        "accountId": "acc_test_123",
+        "orgIdentifier": "default",
+        "identifier": "golden_pipeline_template",
+        "name": "Golden Pipeline Template",
+        "description": null,
+        "tags": {},
+        "yaml": "template:\n  name: Golden Pipeline Template\n  identifier: golden_pipeline_template\n  versionLabel: stable\n  type: Pipeline\n",
+        "versionLabel": "stable",
+        "templateEntityType": "Pipeline",
+        "childType": null,
+        "templateScope": "org",
+        "version": 5,
+        "gitDetails": {
+          "repoName": "golden-templates",
+          "branch": "main"
+        },
+        "lastUpdatedAt": 1701000000000,
+        "storeType": "REMOTE",
+        "stableTemplate": true
+      }
+    ],
+    "totalPages": 1,
+    "totalElements": 3,
+    "pageable": {
+      "pageNumber": 0,
+      "pageSize": 100
+    }
+  },
+  "metaData": null,
+  "correlationId": "b1c2d3e4-0000-1111-2222-333344445555"
+}

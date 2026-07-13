@@ -10,15 +10,20 @@ import re
 from typing import Any
 
 from core.models import (
+    EnvironmentSummary,
     ExecutionGraph,
     ExecutionStatus,
     FailureInfo,
     GraphNode,
+    InfrastructureSummary,
     InputSet,
     PipelineExecution,
     PipelineSummary,
+    SecretInfo,
+    ServiceSummary,
     StageExecution,
     StepExecution,
+    TemplateSummary,
 )
 
 logger = logging.getLogger(__name__)
@@ -139,6 +144,7 @@ def _parse_layout_stages(
                     stage_type=node.get("nodeType", node.get("module", "Unknown")),
                     failure_info=_parse_failure_info(node.get("failureInfo")),
                     steps=steps,
+                    child_execution_id=_parse_child_execution_id(node),
                 )
             )
 
@@ -198,6 +204,23 @@ def _to_step(node_id: str, node: dict[str, Any]) -> StepExecution:
         delegate_info=_parse_delegate_info(node.get("delegateInfoList")),
         outcomes=node.get("outcomes"),
     )
+
+
+def _parse_child_execution_id(node: dict[str, Any]) -> str | None:
+    """Extract a chained pipeline's child execution ID from a layout node.
+
+    Pipeline-type (chained) stage nodes carry
+    ``stepDetails.childPipelineExecutionDetails.planExecutionId`` — the
+    authoritative reference to the child execution.
+    """
+    step_details = node.get("stepDetails")
+    if not isinstance(step_details, dict):
+        return None
+    child_details = step_details.get("childPipelineExecutionDetails")
+    if not isinstance(child_details, dict):
+        return None
+    child_id = child_details.get("planExecutionId")
+    return child_id if isinstance(child_id, str) and child_id else None
 
 
 def _parse_failure_info(raw: Any) -> FailureInfo | None:
@@ -306,6 +329,183 @@ def parse_input_sets(raw: list[dict[str, Any]]) -> list[InputSet]:
         )
         for item in raw
     ]
+
+
+# ------------------------------------------------------------------
+# Templates (template API)
+# ------------------------------------------------------------------
+
+
+def parse_template_list(raw: list[dict[str, Any]]) -> list[TemplateSummary]:
+    """Parse template listing into ``TemplateSummary`` objects."""
+    result: list[TemplateSummary] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+
+        scope = str(item.get("templateScope", "") or "").lower()
+        if not scope:
+            # Infer scope from which identifiers are present
+            if item.get("projectIdentifier"):
+                scope = "project"
+            elif item.get("orgIdentifier"):
+                scope = "org"
+            else:
+                scope = "account"
+
+        raw_tags = item.get("tags")
+        tags = (
+            {str(k): str(v) for k, v in raw_tags.items()}
+            if isinstance(raw_tags, dict)
+            else {}
+        )
+
+        result.append(
+            TemplateSummary(
+                identifier=item.get("identifier", ""),
+                name=item.get("name", ""),
+                version_label=str(item.get("versionLabel", "") or ""),
+                template_entity_type=str(item.get("templateEntityType", "") or ""),
+                child_type=item.get("childType"),
+                scope=scope,
+                stable_template=bool(item.get("stableTemplate", False)),
+                description=item.get("description"),
+                tags=tags,
+                store_type=str(item.get("storeType", "INLINE") or "INLINE"),
+                last_updated=item.get("lastUpdatedAt"),
+            )
+        )
+    return result
+
+
+# ------------------------------------------------------------------
+# Secrets, environments, infrastructure, services (NG API)
+# ------------------------------------------------------------------
+
+
+def _infer_scope(item: dict[str, Any]) -> str:
+    """Infer entity scope from which org/project identifiers are present."""
+    if item.get("projectIdentifier"):
+        return "project"
+    if item.get("orgIdentifier"):
+        return "org"
+    return "account"
+
+
+def _parse_tag_dict(raw_tags: Any) -> dict[str, str]:
+    return (
+        {str(k): str(v) for k, v in raw_tags.items()}
+        if isinstance(raw_tags, dict)
+        else {}
+    )
+
+
+def parse_secret_item(item: dict[str, Any]) -> SecretInfo:
+    """Parse a single v2 secrets API item into ``SecretInfo``.
+
+    The item wraps the entity as ``{"secret": {...}, "createdAt": …,
+    "updatedAt": …}``.  Only metadata is parsed — the ``spec.value`` field
+    (always null/absent for reads) is intentionally never touched.
+    """
+    secret = item.get("secret", item)
+    if not isinstance(secret, dict):
+        secret = {}
+    spec = secret.get("spec", {})
+    if not isinstance(spec, dict):
+        spec = {}
+
+    return SecretInfo(
+        identifier=str(secret.get("identifier", "")),
+        name=str(secret.get("name", secret.get("identifier", ""))),
+        secret_type=str(secret.get("type", "") or ""),
+        secret_manager=str(spec.get("secretManagerIdentifier", "") or ""),
+        value_type=str(spec.get("valueType", "") or ""),
+        scope=_infer_scope(secret),
+        description=secret.get("description") or None,
+        tags=_parse_tag_dict(secret.get("tags")),
+        created=item.get("createdAt"),
+        last_modified=item.get("updatedAt"),
+        draft=bool(item.get("draft", False)),
+    )
+
+
+def parse_secret_list(raw: list[dict[str, Any]]) -> list[SecretInfo]:
+    """Parse the v2 secrets listing into ``SecretInfo`` objects."""
+    return [parse_secret_item(item) for item in raw if isinstance(item, dict)]
+
+
+def parse_environment_list(raw: list[dict[str, Any]]) -> list[EnvironmentSummary]:
+    """Parse environmentsV2 listing into ``EnvironmentSummary`` objects."""
+    result: list[EnvironmentSummary] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        env = item.get("environment", item)
+        if not isinstance(env, dict):
+            continue
+        result.append(
+            EnvironmentSummary(
+                identifier=str(env.get("identifier", "")),
+                name=str(env.get("name", env.get("identifier", ""))),
+                env_type=str(env.get("type", "") or ""),
+                scope=_infer_scope(env),
+                description=env.get("description") or None,
+                tags=_parse_tag_dict(env.get("tags")),
+                store_type=str(env.get("storeType", "INLINE") or "INLINE"),
+                created=item.get("createdAt"),
+                last_modified=item.get("lastModifiedAt"),
+            )
+        )
+    return result
+
+
+def parse_infrastructure_list(raw: list[dict[str, Any]]) -> list[InfrastructureSummary]:
+    """Parse infrastructures listing into ``InfrastructureSummary`` objects."""
+    result: list[InfrastructureSummary] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        infra = item.get("infrastructure", item)
+        if not isinstance(infra, dict):
+            continue
+        result.append(
+            InfrastructureSummary(
+                identifier=str(infra.get("identifier", "")),
+                name=str(infra.get("name", infra.get("identifier", ""))),
+                environment_ref=str(infra.get("environmentRef", "") or ""),
+                infra_type=str(infra.get("type", "") or ""),
+                deployment_type=str(infra.get("deploymentType", "") or ""),
+                description=infra.get("description") or None,
+                created=item.get("createdAt"),
+                last_modified=item.get("lastModifiedAt"),
+            )
+        )
+    return result
+
+
+def parse_service_list(raw: list[dict[str, Any]]) -> list[ServiceSummary]:
+    """Parse servicesV2 listing into ``ServiceSummary`` objects."""
+    result: list[ServiceSummary] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        service = item.get("service", item)
+        if not isinstance(service, dict):
+            continue
+        result.append(
+            ServiceSummary(
+                identifier=str(service.get("identifier", "")),
+                name=str(service.get("name", service.get("identifier", ""))),
+                description=service.get("description") or None,
+                deployment_type=str(service.get("deploymentType", "") or ""),
+                scope=_infer_scope(service),
+                tags=_parse_tag_dict(service.get("tags")),
+                store_type=str(service.get("storeType", "INLINE") or "INLINE"),
+                created=item.get("createdAt"),
+                last_modified=item.get("lastModifiedAt"),
+            )
+        )
+    return result
 
 
 # ------------------------------------------------------------------
@@ -794,6 +994,16 @@ def parse_recent_executions(
         execution_id = summary.get("planExecutionId", "")
         url = build_execution_url(base_url, account_id, org, project, pipeline_id, execution_id)
 
+        # Summary items carry layoutNodeMap (no executionGraph), so stages
+        # parse with names/statuses but empty step lists.  History-based
+        # analysis (failure hotspots, same-stage detection) depends on this.
+        layout = summary.get("layoutNodeMap", {})
+        stages = (
+            _parse_layout_stages(layout, summary.get("startingNodeId", ""), {})
+            if isinstance(layout, dict) and layout
+            else []
+        )
+
         results.append(
             PipelineExecution(
                 plan_execution_id=execution_id,
@@ -811,7 +1021,7 @@ def parse_recent_executions(
             ),
                 run_sequence=summary.get("runSequence", 0),
                 execution_url=url,
-                stages=[],
+                stages=stages,
                 execution_input_yaml=None,
                 tags=_parse_tags(summary.get("tags", [])),
             )

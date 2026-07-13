@@ -201,6 +201,134 @@ class TestHawkeyeGetPipelineDefinition:
         assert "branch: develop" in result
 
 
+# ------------------------------------------------------------------
+# Pipeline ID resolution (paginated listing regression)
+# ------------------------------------------------------------------
+
+
+class TestResolvePipelineId:
+    """Regression tests for exact IDs missing from the paginated listing.
+
+    The unfiltered v1 pipeline listing is paginated, so a valid pipeline
+    (e.g. ``build_shell``) may not appear in it.  The resolver must find
+    exact identifiers via a server-side search before fuzzy matching.
+    """
+
+    @staticmethod
+    def _listing_without_build_shell(search: str | None = None):
+        """Simulate a paginated project: search finds build_shell, the
+        unfiltered first page does not contain it."""
+
+        async def _list(search: str | None = None):
+            if search and "build_shell" in search:
+                return [_make_pipeline_summary(identifier="build_shell", name="build_shell")]
+            if search:
+                return []
+            return [
+                _make_pipeline_summary(identifier="build_binders_service"),
+                _make_pipeline_summary(identifier="build_authoring_mfe"),
+            ]
+
+        return _list
+
+    @pytest.mark.asyncio
+    async def test_exact_id_found_via_search_when_not_in_listing(
+        self, mock_provider
+    ) -> None:
+        from tools._helpers import resolve_pipeline_id
+
+        mock_provider.list_pipelines.side_effect = self._listing_without_build_shell()
+        resolved = await resolve_pipeline_id("build_shell")
+        assert resolved == "build_shell"
+
+    @pytest.mark.asyncio
+    async def test_exact_id_in_listing_passes_through(self, mock_provider) -> None:
+        from tools._helpers import resolve_pipeline_id
+
+        async def _list(search: str | None = None):
+            if search:
+                return []
+            return [_make_pipeline_summary(identifier="ci_cd_pipeline")]
+
+        mock_provider.list_pipelines.side_effect = _list
+        resolved = await resolve_pipeline_id("ci_cd_pipeline")
+        assert resolved == "ci_cd_pipeline"
+
+    @pytest.mark.asyncio
+    async def test_search_hits_merged_into_fuzzy_candidates(self, mock_provider) -> None:
+        """A fuzzy name whose target only appears in search results resolves."""
+        from tools._helpers import resolve_pipeline_id
+
+        mock_provider.list_pipelines.side_effect = self._listing_without_build_shell()
+        resolved = await resolve_pipeline_id("build_shell_x")
+        assert resolved == "build_shell"
+
+    @pytest.mark.asyncio
+    async def test_fuzzy_match_still_works(self, mock_provider) -> None:
+        from tools._helpers import resolve_pipeline_id
+
+        async def _list(search: str | None = None):
+            if search:
+                return []
+            return [_make_pipeline_summary(identifier="alpha_pipeline")]
+
+        mock_provider.list_pipelines.side_effect = _list
+        resolved = await resolve_pipeline_id("alpha")
+        assert resolved == "alpha_pipeline"
+
+    @pytest.mark.asyncio
+    async def test_empty_listing_passes_through(self, mock_provider) -> None:
+        from tools._helpers import resolve_pipeline_id
+
+        mock_provider.list_pipelines.return_value = []
+        resolved = await resolve_pipeline_id("anything")
+        assert resolved == "anything"
+
+    @pytest.mark.asyncio
+    async def test_no_match_raises_with_suggestions(self, mock_provider) -> None:
+        from tools._helpers import resolve_pipeline_id
+
+        async def _list(search: str | None = None):
+            if search:
+                return []
+            return [_make_pipeline_summary(identifier="alpha_pipeline")]
+
+        mock_provider.list_pipelines.side_effect = _list
+        with pytest.raises(ValueError, match="not found"):
+            await resolve_pipeline_id("zzzzqqqq")
+
+
+class TestListPipelinesPagination:
+    @pytest.mark.asyncio
+    async def test_limit_param_sent(self) -> None:
+        """The client requests up to 100 pipelines instead of the server default."""
+        import httpx
+        import respx
+
+        from core.models import HarnessProfile
+        from providers.harness.client import HarnessClient
+
+        profile = HarnessProfile(
+            name="test-profile",
+            account_id="acc123",
+            org_identifier="default",
+            project_identifier="hawkeye_proj",
+            base_url="https://app.harness.io",
+            is_active=True,
+        )
+        with (
+            patch("providers.harness.client.get_token", return_value="tok_secret"),
+            respx.mock,
+        ):
+            route = respx.get(
+                "https://app.harness.io/v1/orgs/default/projects/hawkeye_proj/pipelines"
+            ).mock(return_value=httpx.Response(200, json=[]))
+            client = HarnessClient(profile)
+            await client.list_pipelines()
+            params = dict(httpx.QueryParams(route.calls[0].request.url.query))
+            assert params["limit"] == "100"
+
+
 class TestHawkeyeGetInputSets:
     @pytest.mark.asyncio
     async def test_listing(self, mock_provider) -> None:

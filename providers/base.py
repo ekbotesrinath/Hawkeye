@@ -12,11 +12,16 @@ from abc import ABC, abstractmethod
 from core.models import (
     ConnectorInfo,
     DelegateInfo,
+    EnvironmentSummary,
     ExecutionGraph,
     ExecutionStatus,
+    InfrastructureSummary,
     InputSet,
     PipelineExecution,
     PipelineSummary,
+    SecretInfo,
+    ServiceSummary,
+    TemplateSummary,
 )
 
 
@@ -73,6 +78,71 @@ class PipelineProvider(ABC):
     @abstractmethod
     async def get_execution_inputs(self, execution_id: str) -> str:
         """Get the input YAML used for a specific execution."""
+
+    @abstractmethod
+    async def list_templates(
+        self,
+        search: str | None = None,
+        template_type: str | None = None,
+        scope: str = "project",
+    ) -> list[TemplateSummary]:
+        """List templates in the given scope (project, org, or account)."""
+
+    @abstractmethod
+    async def get_template(
+        self,
+        template_id: str,
+        version_label: str | None = None,
+        scope: str = "project",
+    ) -> dict:  # type: ignore[type-arg]
+        """Get template detail including YAML.
+
+        When *version_label* is omitted, the stable version is returned.
+        """
+
+    @abstractmethod
+    async def list_secrets(
+        self, search: str | None = None, scope: str = "project"
+    ) -> list[SecretInfo]:
+        """List secret metadata in the given scope — never secret values."""
+
+    @abstractmethod
+    async def get_secret(self, secret_id: str, scope: str = "project") -> SecretInfo:
+        """Get metadata for a single secret — never the secret value.
+
+        A scope prefix in the identifier (``account.`` / ``org.``)
+        overrides *scope*.
+        """
+
+    @abstractmethod
+    async def list_environments(
+        self, search: str | None = None
+    ) -> list[EnvironmentSummary]:
+        """List environments in the current project."""
+
+    @abstractmethod
+    async def get_environment(self, environment_id: str) -> dict:  # type: ignore[type-arg]
+        """Get environment detail including YAML."""
+
+    @abstractmethod
+    async def list_infrastructures(
+        self, environment_id: str
+    ) -> list[InfrastructureSummary]:
+        """List infrastructure definitions for an environment."""
+
+    @abstractmethod
+    async def get_infrastructure(
+        self, infrastructure_id: str, environment_id: str
+    ) -> dict:  # type: ignore[type-arg]
+        """Get infrastructure definition detail including YAML."""
+
+    @abstractmethod
+    async def list_services(self, search: str | None = None) -> list[ServiceSummary]:
+        """List services in the current project."""
+
+    @abstractmethod
+    async def get_service(self, service_id: str) -> dict:  # type: ignore[type-arg]
+        """Get service detail including YAML."""
 
     @abstractmethod
     async def test_connection(self) -> bool:

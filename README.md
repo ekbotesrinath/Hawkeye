@@ -67,17 +67,30 @@ make server
 | 9 | `hawkeye_get_pipeline_definition` | Pipeline | Pipeline YAML definition (supports branch selection) |
 | 10 | `hawkeye_list_pipelines` | Pipeline | List pipelines (filterable by search or module) |
 | 11 | `hawkeye_get_input_sets` | Pipeline | Available input sets for a pipeline |
-| 12 | `hawkeye_diagnose` | Investigation | **Flagship** — unified diagnosis (summary/full mode, optional console logs) |
-| 13 | `hawkeye_investigate_failure` | Investigation | Parallel multi-signal failure triage |
-| 14 | `hawkeye_compare_executions` | Investigation | Diff two executions — inputs, branches, timing |
-| 15 | `hawkeye_get_failure_pattern` | Investigation | Recurring failure analysis and trends |
-| 16 | `hawkeye_connect_account` | Account | Switch active Harness profile |
-| 17 | `hawkeye_list_profiles` | Account | List configured profiles |
-| 18 | `hawkeye_list_delegates` | Delegate | List all delegate groups with health status |
-| 19 | `hawkeye_check_delegate` | Delegate | Check health of a specific delegate (fuzzy match) |
-| 20 | `hawkeye_list_connectors` | Connector | List connectors with connectivity status |
-| 21 | `hawkeye_check_connector` | Connector | Test connectivity of a specific connector |
-| 22 | `ping` | Utility | Health check |
+| 12 | `hawkeye_list_templates` | Template | List templates (filterable by search, type, or scope) |
+| 13 | `hawkeye_get_template` | Template | Template YAML definition (fuzzy match, version selection, project/org/account scope) |
+| 14 | `hawkeye_diagnose` | Investigation | **Flagship** — unified diagnosis (summary/full mode, optional console logs) |
+| 15 | `hawkeye_investigate_failure` | Investigation | Parallel multi-signal failure triage |
+| 16 | `hawkeye_compare_executions` | Investigation | Diff two executions — inputs, branches, timing |
+| 17 | `hawkeye_get_failure_pattern` | Investigation | Recurring failure analysis and trends |
+| 18 | `hawkeye_connect_account` | Account | Switch active Harness profile |
+| 19 | `hawkeye_list_profiles` | Account | List configured profiles |
+| 20 | `hawkeye_list_delegates` | Delegate | List all delegate groups with health status |
+| 21 | `hawkeye_check_delegate` | Delegate | Check health of a specific delegate (fuzzy match) |
+| 22 | `hawkeye_list_connectors` | Connector | List connectors with connectivity status |
+| 23 | `hawkeye_check_connector` | Connector | Test connectivity of a specific connector |
+| 24 | `hawkeye_build_link` | Deeplinks | Build Harness UI deep links |
+| 25 | `hawkeye_parse_terraform_plan` | Terraform | Parse Terraform plan output |
+| 26 | `hawkeye_release_precheck_report` | Terraform | Release precheck report |
+| 27 | `hawkeye_list_secrets` | Secrets | List secret **metadata** — type, secret manager, last modified (never values) |
+| 28 | `hawkeye_check_secret` | Secrets | Resolve a `<+secrets.getValue(...)>` ref to its metadata (fuzzy match, scope prefix) |
+| 29 | `hawkeye_list_environments` | Environment | List environments (Production/PreProduction) |
+| 30 | `hawkeye_get_environment` | Environment | Environment YAML — variables and overrides (fuzzy match) |
+| 31 | `hawkeye_list_infrastructures` | Environment | List infrastructure definitions for an environment |
+| 32 | `hawkeye_get_infrastructure` | Environment | Infrastructure YAML — connectorRef, cluster/namespace (fuzzy match) |
+| 33 | `hawkeye_list_services` | Environment | List services in the project |
+| 34 | `hawkeye_get_service` | Environment | Service YAML — manifests, artifacts, variables (fuzzy match) |
+| 35 | `ping` | Utility | Health check |
 
 All tools are **read-only**, **parallel-safe**, **audit-logged**, and **secret-sanitized**.
 
@@ -190,11 +203,14 @@ window focused on the tools relevant to your workflow.
 | `execution` | get_execution, get_stage_detail, get_step_logs, get_execution_inputs, list_recent_executions, get_all_stages, get_child_execution, check_approvals |
 | `investigation` | diagnose, investigate_failure, compare_executions, get_failure_pattern |
 | `pipeline` | list_pipelines, get_pipeline_definition, get_input_sets |
+| `templates` | list_templates, get_template |
 | `account` | connect_account, list_profiles *(always registered)* |
 | `deeplinks` | build_link |
 | `terraform` | parse_terraform_plan, release_precheck_report |
 | `delegates` | list_delegates, check_delegate |
 | `connectors` | list_connectors, check_connector |
+| `secrets` | list_secrets, check_secret |
+| `environments` | list_environments, get_environment, list_infrastructures, get_infrastructure, list_services, get_service |
 
 **Behavior:**
 - **Not set / empty / `all`** — all toolsets are registered (default, backward-compatible).

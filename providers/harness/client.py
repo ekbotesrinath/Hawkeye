@@ -20,20 +20,31 @@ from core.credentials import get_token
 from core.models import (
     ConnectorInfo,
     DelegateInfo,
+    EnvironmentSummary,
     ExecutionGraph,
     ExecutionStatus,
     HarnessProfile,
+    InfrastructureSummary,
     InputSet,
     PipelineExecution,
     PipelineSummary,
+    SecretInfo,
+    ServiceSummary,
+    TemplateSummary,
 )
 from providers.base import PipelineProvider
 from providers.harness.parser import (
+    parse_environment_list,
     parse_execution_detail,
     parse_execution_graph,
+    parse_infrastructure_list,
     parse_input_sets,
     parse_pipeline_list,
     parse_recent_executions,
+    parse_secret_item,
+    parse_secret_list,
+    parse_service_list,
+    parse_template_list,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,6 +76,21 @@ def _raw_node(raw_node_map: dict[str, Any], uuid: str) -> dict[str, Any]:
     """Return a shallow copy of a raw graph node, if present."""
     raw = raw_node_map.get(uuid)
     return dict(raw) if isinstance(raw, dict) else {}
+
+
+def _split_scope_prefix(identifier: str) -> tuple[str, str]:
+    """Split a scope prefix from an entity identifier.
+
+    Returns (scope, bare_identifier).
+    'account.MyTemplate' -> ('account', 'MyTemplate')
+    'org.MyTemplate'     -> ('org', 'MyTemplate')
+    'MyTemplate'         -> ('project', 'MyTemplate')
+    """
+    if identifier.startswith("account."):
+        return "account", identifier[len("account."):]
+    if identifier.startswith("org."):
+        return "org", identifier[len("org."):]
+    return "project", identifier
 
 
 def _normalize_lookup_token(value: str) -> str:
@@ -290,13 +316,18 @@ class HarnessClient(PipelineProvider):
     # Low-level request helpers
     # ------------------------------------------------------------------
 
-    def _scope_params(self) -> dict[str, str]:
-        """Return the mandatory account/org/project query params."""
-        return {
-            "accountIdentifier": self._profile.account_id,
-            "orgIdentifier": self._profile.org_identifier,
-            "projectIdentifier": self._profile.project_identifier,
-        }
+    def _scope_params(self, scope: str = "project") -> dict[str, str]:
+        """Return the account/org/project query params for the given scope.
+
+        Account-scoped requests must omit org/project identifiers, and
+        org-scoped requests must omit the project identifier.
+        """
+        params = {"accountIdentifier": self._profile.account_id}
+        if scope in ("org", "project"):
+            params["orgIdentifier"] = self._profile.org_identifier
+        if scope == "project":
+            params["projectIdentifier"] = self._profile.project_identifier
+        return params
 
     async def _request(
         self,
@@ -306,6 +337,7 @@ class HarnessClient(PipelineProvider):
         params: dict[str, Any] | None = None,
         json_body: dict[str, Any] | None = None,
         raw_response: bool = False,
+        scope: str = "project",
     ) -> Any:
         """Send an HTTP request with retries and read-only enforcement."""
         method_upper = method.upper()
@@ -315,7 +347,7 @@ class HarnessClient(PipelineProvider):
             )
 
         client = await self._ensure_client()
-        merged_params = {**self._scope_params(), **(params or {})}
+        merged_params = {**self._scope_params(scope), **(params or {})}
 
         last_exc: Exception | None = None
         for attempt in range(_MAX_RETRIES):
@@ -622,7 +654,10 @@ class HarnessClient(PipelineProvider):
         self, search: str | None = None
     ) -> list[PipelineSummary]:
         """List all pipelines in current project (v1 API)."""
-        params: dict[str, str] = {"accountIdentifier": self._profile.account_id}
+        params: dict[str, str] = {
+            "accountIdentifier": self._profile.account_id,
+            "limit": "100",
+        }
         if search:
             params["search_term"] = search
         raw = await self._request(
@@ -646,6 +681,65 @@ class HarnessClient(PipelineProvider):
         items = raw if isinstance(raw, list) else raw.get("content", [])
         return parse_input_sets(items)
 
+    async def list_templates(
+        self,
+        search: str | None = None,
+        template_type: str | None = None,
+        scope: str = "project",
+    ) -> list[TemplateSummary]:
+        """List templates in the given scope (template API).
+
+        Returns the last-updated version of each template.  *template_type*
+        filters by entity type (Step, Stage, Pipeline, StepGroup, …).
+        """
+        params: dict[str, str] = {
+            "templateListType": "LastUpdated",
+            "page": "0",
+            "size": "100",
+        }
+        if search:
+            params["searchTerm"] = search
+        body: dict[str, Any] = {"filterType": "Template"}
+        if template_type:
+            body["templateEntityTypes"] = [template_type]
+        raw = await self._request(
+            "POST",
+            "/template/api/templates/list",
+            params=params,
+            json_body=body,
+            scope=scope,
+        )
+        data = self._unwrap_legacy(raw)
+        items = data.get("content", []) if isinstance(data, dict) else data
+        return parse_template_list(items if isinstance(items, list) else [])
+
+    async def get_template(
+        self,
+        template_id: str,
+        version_label: str | None = None,
+        scope: str = "project",
+    ) -> dict:  # type: ignore[type-arg]
+        """Get template detail including YAML (template API).
+
+        Omitting *version_label* returns the stable version.  A scope prefix
+        in the identifier (``account.`` / ``org.``) overrides *scope*.
+        """
+        parsed_scope, bare_id = _split_scope_prefix(template_id)
+        if parsed_scope != "project":
+            scope = parsed_scope
+
+        params: dict[str, str] = {"getDefaultFromOtherRepo": "true"}
+        if version_label:
+            params["versionLabel"] = version_label
+        raw = await self._request(
+            "GET",
+            f"/template/api/templates/{bare_id}",
+            params=params,
+            scope=scope,
+        )
+        data = self._unwrap_legacy(raw)
+        return data if isinstance(data, dict) else {"yaml": str(data)}
+
     async def get_execution_inputs(self, execution_id: str) -> str:
         """Get the input YAML used for a specific execution."""
         raw = await self._request(
@@ -658,6 +752,103 @@ class HarnessClient(PipelineProvider):
             yaml_str = str(data.get("inputSetYaml") or data.get("inputSetTemplateYaml") or "")
             return yaml_str
         return str(data)
+
+    async def list_secrets(
+        self, search: str | None = None, scope: str = "project"
+    ) -> list[SecretInfo]:
+        """List secret metadata in the given scope (v2 secrets API).
+
+        The v2 read API never returns secret values — only metadata such as
+        type, secret manager, tags, and modification timestamps.
+        """
+        params: dict[str, str] = {"pageSize": "100"}
+        if search:
+            params["searchTerm"] = search
+        raw = await self._request("GET", "/ng/api/v2/secrets", params=params, scope=scope)
+        data = self._unwrap_legacy(raw)
+        items = data.get("content", []) if isinstance(data, dict) else data
+        return parse_secret_list(items if isinstance(items, list) else [])
+
+    async def get_secret(self, secret_id: str, scope: str = "project") -> SecretInfo:
+        """Get metadata for a single secret (v2 secrets API) — never the value.
+
+        A scope prefix in the identifier (``account.`` / ``org.``) — the form
+        used by ``<+secrets.getValue(...)>`` expressions — overrides *scope*.
+        """
+        parsed_scope, bare_id = _split_scope_prefix(secret_id)
+        if parsed_scope != "project":
+            scope = parsed_scope
+        raw = await self._request("GET", f"/ng/api/v2/secrets/{bare_id}", scope=scope)
+        data = self._unwrap_legacy(raw)
+        return parse_secret_item(data if isinstance(data, dict) else {})
+
+    async def list_environments(
+        self, search: str | None = None
+    ) -> list[EnvironmentSummary]:
+        """List environments in the current project (environmentsV2 API)."""
+        params: dict[str, str] = {"size": "100"}
+        if search:
+            params["searchTerm"] = search
+        raw = await self._request("GET", "/ng/api/environmentsV2", params=params)
+        data = self._unwrap_legacy(raw)
+        items = data.get("content", []) if isinstance(data, dict) else data
+        return parse_environment_list(items if isinstance(items, list) else [])
+
+    async def get_environment(self, environment_id: str) -> dict:  # type: ignore[type-arg]
+        """Get environment detail including YAML (environmentsV2 API)."""
+        raw = await self._request("GET", f"/ng/api/environmentsV2/{environment_id}")
+        data = self._unwrap_legacy(raw)
+        if not isinstance(data, dict):
+            return {}
+        env = data.get("environment", data)
+        return env if isinstance(env, dict) else {}
+
+    async def list_infrastructures(
+        self, environment_id: str
+    ) -> list[InfrastructureSummary]:
+        """List infrastructure definitions for an environment."""
+        raw = await self._request(
+            "GET",
+            "/ng/api/infrastructures",
+            params={"environmentIdentifier": environment_id, "size": "100"},
+        )
+        data = self._unwrap_legacy(raw)
+        items = data.get("content", []) if isinstance(data, dict) else data
+        return parse_infrastructure_list(items if isinstance(items, list) else [])
+
+    async def get_infrastructure(
+        self, infrastructure_id: str, environment_id: str
+    ) -> dict:  # type: ignore[type-arg]
+        """Get infrastructure definition detail including YAML."""
+        raw = await self._request(
+            "GET",
+            f"/ng/api/infrastructures/{infrastructure_id}",
+            params={"environmentIdentifier": environment_id},
+        )
+        data = self._unwrap_legacy(raw)
+        if not isinstance(data, dict):
+            return {}
+        infra = data.get("infrastructure", data)
+        return infra if isinstance(infra, dict) else {}
+
+    async def list_services(self, search: str | None = None) -> list[ServiceSummary]:
+        """List services in the current project (servicesV2 API)."""
+        params: dict[str, str] = {"size": "100"}
+        if search:
+            params["searchTerm"] = search
+        raw = await self._request("GET", "/ng/api/servicesV2", params=params)
+        data = self._unwrap_legacy(raw)
+        items = data.get("content", []) if isinstance(data, dict) else data
+        return parse_service_list(items if isinstance(items, list) else [])
+
+    async def get_service(self, service_id: str) -> dict:  # type: ignore[type-arg]
+        """Get service detail including YAML (servicesV2 API)."""
+        raw = await self._request("GET", f"/ng/api/servicesV2/{service_id}")
+        data = self._unwrap_legacy(raw)
+        if not isinstance(data, dict):
+            return {}
+        service = data.get("service", data)
+        return service if isinstance(service, dict) else {}
 
     async def test_connection(self) -> bool:
         """Verify credentials by listing pipelines (lightweight call)."""
@@ -718,8 +909,13 @@ class HarnessClient(PipelineProvider):
                 elif isinstance(selectors, list):
                     tags = [str(s) for s in selectors]
 
-            # Modern API uses "delegateReplicas", legacy uses "delegateInstanceDetails"
-            replicas = item.get("delegateReplicas", item.get("delegateInstanceDetails", []))
+            # Modern API uses "delegateReplicas", legacy uses "delegateInstanceDetails".
+            # Either key may be present with an explicit null value.
+            replicas = (
+                item.get("delegateReplicas")
+                or item.get("delegateInstanceDetails")
+                or []
+            )
 
             # Status from first replica
             if replicas:
@@ -796,11 +992,7 @@ class HarnessClient(PipelineProvider):
         'org.MyConn'          -> ('org', 'MyConn')
         'GHConnector'         -> ('project', 'GHConnector')
         """
-        if identifier.startswith("account."):
-            return "account", identifier[len("account."):]
-        if identifier.startswith("org."):
-            return "org", identifier[len("org."):]
-        return "project", identifier
+        return _split_scope_prefix(identifier)
 
     async def test_connector(self, identifier: str, scope: str = "project") -> dict:
         """Test connectivity of a specific connector (read-only POST).

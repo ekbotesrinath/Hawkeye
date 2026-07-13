@@ -1,0 +1,49 @@
+{
+  "status": "SUCCESS",
+  "data": {
+    "totalPages": 1,
+    "totalItems": 2,
+    "pageItemCount": 2,
+    "pageSize": 100,
+    "content": [
+      {
+        "infrastructure": {
+          "accountId": "acc_test_123",
+          "orgIdentifier": "default",
+          "projectIdentifier": "hawkeye_project",
+          "identifier": "prod_k8s",
+          "name": "Prod K8s Cluster",
+          "description": "Primary AKS cluster",
+          "tags": {},
+          "environmentRef": "prod",
+          "deploymentType": "Kubernetes",
+          "type": "KubernetesDirect",
+          "yaml": "infrastructureDefinition:\n  name: Prod K8s Cluster\n  identifier: prod_k8s\n  environmentRef: prod\n  deploymentType: Kubernetes\n  type: KubernetesDirect\n  spec:\n    connectorRef: account.prod_cluster\n    namespace: hawkeye\n    releaseName: release-<+INFRA_KEY>\n"
+        },
+        "createdAt": 1690000000000,
+        "lastModifiedAt": 1748000000000
+      },
+      {
+        "infrastructure": {
+          "accountId": "acc_test_123",
+          "orgIdentifier": "default",
+          "projectIdentifier": "hawkeye_project",
+          "identifier": "prod_vms",
+          "name": "Prod VMs",
+          "description": null,
+          "tags": {},
+          "environmentRef": "prod",
+          "deploymentType": "Ssh",
+          "type": "Pdc",
+          "yaml": "infrastructureDefinition:\n  name: Prod VMs\n  identifier: prod_vms\n  environmentRef: prod\n  deploymentType: Ssh\n  type: Pdc\n  spec:\n    credentialsRef: org.deploy_ssh_key\n    hosts:\n      - vm-prod-01\n      - vm-prod-02\n"
+        },
+        "createdAt": 1690000000000,
+        "lastModifiedAt": 1730000000000
+      }
+    ],
+    "pageIndex": 0,
+    "empty": false
+  },
+  "metaData": null,
+  "correlationId": "cc33dd44-0000-1111-2222-333344445555"
+}

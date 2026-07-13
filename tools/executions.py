@@ -412,9 +412,10 @@ def register_execution_tools(mcp: FastMCP) -> None:
                     f"not a Pipeline-type stage."
                 )
 
-            # Search raw graph for child execution ID
-            child_id = None
-            if isinstance(raw_node_map, dict):
+            # The layout node carries the authoritative child execution ID;
+            # fall back to searching the raw graph.
+            child_id = stage.child_execution_id
+            if not child_id and isinstance(raw_node_map, dict):
                 for _uuid, raw_node in raw_node_map.items():
                     if not isinstance(raw_node, dict):
                         continue
@@ -686,6 +687,20 @@ def _format_approvals(
             lines.append(f"🚫 **{a['name']}** (Stage: {a['stage_name']}) — Rejected {rel}")
         lines.append("")
 
+    # Anything else (expired, aborted, failed approval steps) must still
+    # surface — an expired approval gate is a common "pipeline stuck" cause.
+    shown = {ExecutionStatus.APPROVAL_WAITING, ExecutionStatus.SUCCESS, ExecutionStatus.APPROVAL_REJECTED}
+    others = [a for a in approvals if a["status"] not in shown]
+    if others:
+        lines.append("### Other Approval Steps")
+        for a in others:
+            rel = format_relative_time(a["end_ts"])
+            lines.append(
+                f"{status_icon(a['status'])} **{a['name']}** (Stage: {a['stage_name']})"
+                f" — {a['status'].value} {rel}"
+            )
+        lines.append("")
+
     return "\n".join(lines).strip()
 
 
@@ -782,6 +797,12 @@ def _format_execution(ex: PipelineExecution) -> str:
         if stage.status in (ExecutionStatus.FAILED, ExecutionStatus.ERRORED):
             marker = "  ← FAILED"
         lines.append(f"  {icon} {stage.name} ({dur}){marker}")
+
+        if stage.child_execution_id:
+            lines.append(
+                f"     ↳ Child Pipeline execution: `{stage.child_execution_id}`"
+                " (follow with hawkeye_get_child_execution or hawkeye_diagnose)"
+            )
 
         if stage.failure_info and stage.failure_info.message:
             ftypes = (
@@ -983,7 +1004,13 @@ def _format_all_stages(
 
         # Pipeline-type indicator (child pipeline)
         if _is_pipeline_step_type(stage.stage_type):
-            lines.append(f"  ↳ Child Pipeline (details in child execution)")
+            if stage.child_execution_id:
+                lines.append(
+                    f"  ↳ Child Pipeline execution: `{stage.child_execution_id}`"
+                    " (follow with hawkeye_get_child_execution)"
+                )
+            else:
+                lines.append("  ↳ Child Pipeline (details in child execution)")
 
         if stage.steps:
             lines.append("")

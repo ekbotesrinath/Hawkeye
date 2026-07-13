@@ -99,6 +99,10 @@ class StageExecution(BaseModel):
     steps: list[StepExecution] = Field(
         default_factory=list, description="Steps within this stage"
     )
+    child_execution_id: str | None = Field(
+        default=None,
+        description="Child pipeline plan execution ID for Pipeline-type (chained) stages",
+    )
 
 
 class PipelineExecution(BaseModel):
@@ -163,6 +167,33 @@ class InputSet(BaseModel):
     updated: int | None = Field(default=None, description="Last update timestamp in Unix ms")
 
 
+class TemplateSummary(BaseModel):
+    """Lightweight template listing entry."""
+
+    model_config = {"frozen": True}
+
+    identifier: str = Field(description="Template identifier")
+    name: str = Field(description="Display name")
+    version_label: str = Field(default="", description="Version label of this template version")
+    template_entity_type: str = Field(
+        default="",
+        description="Template type (Step, Stage, Pipeline, StepGroup, …)",
+    )
+    child_type: str | None = Field(
+        default=None, description="Child entity type (ShellScript, Deployment, CI, …)"
+    )
+    scope: str = Field(default="project", description="Scope: account, org, or project")
+    stable_template: bool = Field(
+        default=False, description="Whether this version is the stable one"
+    )
+    description: str | None = Field(default=None, description="Template description")
+    tags: dict[str, str] = Field(default_factory=dict, description="User-defined tags")
+    store_type: str = Field(default="INLINE", description="INLINE or REMOTE")
+    last_updated: int | None = Field(
+        default=None, description="Last update timestamp in Unix ms"
+    )
+
+
 class GraphNode(BaseModel):
     """Single node in the execution graph."""
 
@@ -221,6 +252,95 @@ class ConnectorInfo(BaseModel):
     scope: str = Field(default="project", description="Scope: account, org, or project")
     delegate_used: str = Field(default="", description="Delegate used for last connectivity test")
     error_summary: str = Field(default="", description="Error summary from last test")
+
+
+class SecretInfo(BaseModel):
+    """Secret metadata from Harness — never contains the secret value."""
+
+    model_config = {"frozen": True}
+
+    identifier: str = Field(description="Secret identifier")
+    name: str = Field(description="Display name")
+    secret_type: str = Field(
+        default="",
+        description="Secret type (SecretText, SecretFile, SSHKey, WinRmCredentials)",
+    )
+    secret_manager: str = Field(
+        default="", description="Identifier of the Secret Manager storing this secret"
+    )
+    value_type: str = Field(
+        default="", description="Inline, Reference, or CustomSecretManagerValues"
+    )
+    scope: str = Field(default="project", description="Scope: account, org, or project")
+    description: str | None = Field(default=None, description="Secret description")
+    tags: dict[str, str] = Field(default_factory=dict, description="User-defined tags")
+    created: int | None = Field(default=None, description="Creation timestamp in Unix ms")
+    last_modified: int | None = Field(
+        default=None, description="Last modification timestamp in Unix ms"
+    )
+    draft: bool = Field(default=False, description="Whether the secret is a draft")
+
+
+class EnvironmentSummary(BaseModel):
+    """Environment listing entry from Harness."""
+
+    model_config = {"frozen": True}
+
+    identifier: str = Field(description="Environment identifier")
+    name: str = Field(description="Display name")
+    env_type: str = Field(
+        default="", description="Environment type (Production, PreProduction)"
+    )
+    scope: str = Field(default="project", description="Scope: account, org, or project")
+    description: str | None = Field(default=None, description="Environment description")
+    tags: dict[str, str] = Field(default_factory=dict, description="User-defined tags")
+    store_type: str = Field(default="INLINE", description="INLINE or REMOTE")
+    created: int | None = Field(default=None, description="Creation timestamp in Unix ms")
+    last_modified: int | None = Field(
+        default=None, description="Last modification timestamp in Unix ms"
+    )
+
+
+class InfrastructureSummary(BaseModel):
+    """Infrastructure definition listing entry from Harness."""
+
+    model_config = {"frozen": True}
+
+    identifier: str = Field(description="Infrastructure definition identifier")
+    name: str = Field(description="Display name")
+    environment_ref: str = Field(default="", description="Parent environment identifier")
+    infra_type: str = Field(
+        default="",
+        description="Infrastructure type (KubernetesDirect, KubernetesAzure, Pdc, …)",
+    )
+    deployment_type: str = Field(
+        default="", description="Deployment type (Kubernetes, NativeHelm, Ssh, …)"
+    )
+    description: str | None = Field(default=None, description="Infrastructure description")
+    created: int | None = Field(default=None, description="Creation timestamp in Unix ms")
+    last_modified: int | None = Field(
+        default=None, description="Last modification timestamp in Unix ms"
+    )
+
+
+class ServiceSummary(BaseModel):
+    """Service listing entry from Harness."""
+
+    model_config = {"frozen": True}
+
+    identifier: str = Field(description="Service identifier")
+    name: str = Field(description="Display name")
+    description: str | None = Field(default=None, description="Service description")
+    deployment_type: str = Field(
+        default="", description="Deployment type when reported by the API"
+    )
+    scope: str = Field(default="project", description="Scope: account, org, or project")
+    tags: dict[str, str] = Field(default_factory=dict, description="User-defined tags")
+    store_type: str = Field(default="INLINE", description="INLINE or REMOTE")
+    created: int | None = Field(default=None, description="Creation timestamp in Unix ms")
+    last_modified: int | None = Field(
+        default=None, description="Last modification timestamp in Unix ms"
+    )
 
 
 class HarnessProfile(BaseModel):

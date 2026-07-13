@@ -70,11 +70,39 @@ class TestServerInit:
         assert "hawkeye_list_connectors" in tools
         assert "hawkeye_check_connector" in tools
 
+    def test_template_tools_registered(self) -> None:
+        from main import mcp
+
+        tools = mcp._tool_manager._tools
+        assert "hawkeye_list_templates" in tools
+        assert "hawkeye_get_template" in tools
+
+    def test_secret_tools_registered(self) -> None:
+        from main import mcp
+
+        tools = mcp._tool_manager._tools
+        assert "hawkeye_list_secrets" in tools
+        assert "hawkeye_check_secret" in tools
+
+    def test_environment_tools_registered(self) -> None:
+        from main import mcp
+
+        tools = mcp._tool_manager._tools
+        assert "hawkeye_list_environments" in tools
+        assert "hawkeye_get_environment" in tools
+        assert "hawkeye_list_infrastructures" in tools
+        assert "hawkeye_get_infrastructure" in tools
+        assert "hawkeye_list_services" in tools
+        assert "hawkeye_get_service" in tools
+
     def test_all_tools_registered(self) -> None:
         from main import mcp
 
         tools = mcp._tool_manager._tools
-        assert len(tools) == 25  # 8 execution + 3 pipeline + 2 account + 4 investigation + 1 deeplink + 2 terraform + 2 delegate + 2 connector + 1 ping
+        # 8 execution + 3 pipeline + 2 template + 2 account + 4 investigation
+        # + 1 deeplink + 2 terraform + 2 delegate + 2 connector + 2 secrets
+        # + 6 environments + 1 ping
+        assert len(tools) == 35
 
     @pytest.mark.asyncio
     async def test_ping_returns_status(self) -> None:
@@ -113,15 +141,18 @@ class TestToolsetFiltering:
         monkeypatch.delenv("HAWKEYE_TOOLSETS", raising=False)
         server = create_server()
         tools = server._tool_manager._tools
-        # All 25 tools should be present
-        assert len(tools) == 25
+        # All 35 tools should be present
+        assert len(tools) == 35
         assert "hawkeye_get_execution" in tools
         assert "hawkeye_diagnose" in tools
         assert "hawkeye_list_pipelines" in tools
+        assert "hawkeye_list_templates" in tools
         assert "hawkeye_connect_account" in tools
         assert "hawkeye_build_link" in tools
         assert "hawkeye_list_delegates" in tools
         assert "hawkeye_list_connectors" in tools
+        assert "hawkeye_check_secret" in tools
+        assert "hawkeye_list_environments" in tools
         assert "ping" in tools
 
     def test_toolset_filtering(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -145,19 +176,26 @@ class TestToolsetFiltering:
         # ping always present
         assert "ping" in tools
 
-        # Pipeline, deeplinks, terraform, delegates, connectors NOT present
+        # Pipeline, templates, deeplinks, terraform, delegates, connectors,
+        # secrets, environments NOT present
         assert "hawkeye_list_pipelines" not in tools
+        assert "hawkeye_list_templates" not in tools
+        assert "hawkeye_get_template" not in tools
         assert "hawkeye_build_link" not in tools
         assert "hawkeye_parse_terraform_plan" not in tools
         assert "hawkeye_list_delegates" not in tools
         assert "hawkeye_list_connectors" not in tools
+        assert "hawkeye_check_secret" not in tools
+        assert "hawkeye_list_secrets" not in tools
+        assert "hawkeye_list_environments" not in tools
+        assert "hawkeye_get_service" not in tools
 
     def test_toolset_all_keyword(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """HAWKEYE_TOOLSETS='all' registers everything."""
         monkeypatch.setenv("HAWKEYE_TOOLSETS", "all")
         server = create_server()
         tools = server._tool_manager._tools
-        assert len(tools) == 25
+        assert len(tools) == 35
 
     def test_toolset_invalid_name_ignored(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
@@ -183,6 +221,18 @@ class TestToolsetFiltering:
         assert "hawkeye_connect_account" in tools
         assert "hawkeye_list_profiles" in tools
 
+    def test_toolset_templates_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """HAWKEYE_TOOLSETS='templates' registers templates + account + ping only."""
+        monkeypatch.setenv("HAWKEYE_TOOLSETS", "templates")
+        server = create_server()
+        tools = server._tool_manager._tools
+        assert "hawkeye_list_templates" in tools
+        assert "hawkeye_get_template" in tools
+        assert "hawkeye_connect_account" in tools
+        assert "ping" in tools
+        assert "hawkeye_get_execution" not in tools
+        assert "hawkeye_list_pipelines" not in tools
+
     def test_toolset_ping_always_registered(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """ping is always available regardless of toolset filter."""
         monkeypatch.setenv("HAWKEYE_TOOLSETS", "execution")
@@ -195,7 +245,7 @@ class TestToolsetFiltering:
         monkeypatch.setenv("HAWKEYE_TOOLSETS", "")
         server = create_server()
         tools = server._tool_manager._tools
-        assert len(tools) == 25
+        assert len(tools) == 35
 
     def test_toolset_explicit_parameter_overrides_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Passing toolsets= to create_server() bypasses the env var."""

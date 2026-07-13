@@ -331,6 +331,36 @@ class TestFormatApprovalsMixed:
         assert pending_pos < completed_pos < rejected_pos
 
 
+class TestFormatApprovalsExpired:
+    """Expired approval gates must not be silently dropped from the report."""
+
+    def test_expired_approval_shows_other_section(self) -> None:
+        step = _make_step(
+            step_id="approval1",
+            name="Approve Prod Deploy",
+            status=ExecutionStatus.EXPIRED,
+            step_type="HarnessApproval",
+            start_ts=_NOW_MS - 900_000,
+            end_ts=_NOW_MS - 300_000,
+        )
+        stage = _make_stage(
+            stage_id="approve_stage",
+            name="Approval Gate",
+            status=ExecutionStatus.EXPIRED,
+            steps=[step],
+        )
+        execution = _make_execution(
+            status=ExecutionStatus.EXPIRED,
+            stages=[stage],
+        )
+
+        result = _format_approvals(execution, {})
+
+        assert "Other Approval Steps" in result
+        assert "Approve Prod Deploy" in result
+        assert "Expired" in result
+
+
 class TestFormatApprovalsNoApprovals:
     """test_check_approvals_no_approvals"""
 

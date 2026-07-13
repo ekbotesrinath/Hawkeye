@@ -690,6 +690,160 @@ class TestGetPipelineDefinition:
         assert result["pipeline_yaml"] == "yaml content"
 
 
+class TestListTemplates:
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_list_templates(
+        self, client: HarnessClient, sample_template_list_response: dict
+    ) -> None:
+        route = respx.post(
+            "https://app.harness.io/template/api/templates/list"
+        ).mock(return_value=httpx.Response(200, json=sample_template_list_response))
+
+        results = await client.list_templates()
+        assert len(results) == 3
+        assert results[0].identifier == "deploy_step_template"
+        assert results[0].template_entity_type == "Step"
+        assert results[0].stable_template is True
+        assert results[2].scope == "org"
+        assert results[2].store_type == "REMOTE"
+
+        request = route.calls[0].request
+        params = dict(request.url.params)
+        assert params["templateListType"] == "LastUpdated"
+        assert params["accountIdentifier"] == "acc123"
+        assert params["orgIdentifier"] == "default"
+        assert params["projectIdentifier"] == "hawkeye_proj"
+        assert json.loads(request.content) == {"filterType": "Template"}
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_list_templates_with_search_and_type(self, client: HarnessClient) -> None:
+        route = respx.post(
+            "https://app.harness.io/template/api/templates/list"
+        ).mock(
+            return_value=httpx.Response(
+                200, json={"status": "SUCCESS", "data": {"content": []}}
+            )
+        )
+
+        results = await client.list_templates(search="deploy", template_type="Step")
+        assert results == []
+
+        request = route.calls[0].request
+        assert dict(request.url.params)["searchTerm"] == "deploy"
+        body = json.loads(request.content)
+        assert body["templateEntityTypes"] == ["Step"]
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_list_templates_account_scope_omits_org_project(
+        self, client: HarnessClient
+    ) -> None:
+        route = respx.post(
+            "https://app.harness.io/template/api/templates/list"
+        ).mock(
+            return_value=httpx.Response(
+                200, json={"status": "SUCCESS", "data": {"content": []}}
+            )
+        )
+
+        await client.list_templates(scope="account")
+        params = dict(route.calls[0].request.url.params)
+        assert params["accountIdentifier"] == "acc123"
+        assert "orgIdentifier" not in params
+        assert "projectIdentifier" not in params
+
+
+class TestGetTemplate:
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_get_template_stable_by_default(self, client: HarnessClient) -> None:
+        wrapped = {
+            "status": "SUCCESS",
+            "data": {
+                "identifier": "deploy_step_template",
+                "name": "Deploy Step Template",
+                "yaml": "template:\n  name: Deploy Step Template\n",
+                "versionLabel": "v2",
+                "stableTemplate": True,
+            },
+        }
+        route = respx.get(
+            "https://app.harness.io/template/api/templates/deploy_step_template"
+        ).mock(return_value=httpx.Response(200, json=wrapped))
+
+        result = await client.get_template("deploy_step_template")
+        assert result["yaml"].startswith("template:")
+        assert result["versionLabel"] == "v2"
+
+        params = dict(route.calls[0].request.url.params)
+        # No versionLabel param → Harness returns the stable version
+        assert "versionLabel" not in params
+        assert params["orgIdentifier"] == "default"
+        assert params["projectIdentifier"] == "hawkeye_proj"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_get_template_with_version_label(self, client: HarnessClient) -> None:
+        route = respx.get(
+            "https://app.harness.io/template/api/templates/tmpl1"
+        ).mock(
+            return_value=httpx.Response(
+                200, json={"status": "SUCCESS", "data": {"yaml": "template: {}"}}
+            )
+        )
+
+        await client.get_template("tmpl1", version_label="v3")
+        assert dict(route.calls[0].request.url.params)["versionLabel"] == "v3"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_get_template_account_prefix_omits_org_project(
+        self, client: HarnessClient
+    ) -> None:
+        route = respx.get(
+            "https://app.harness.io/template/api/templates/shared_tmpl"
+        ).mock(
+            return_value=httpx.Response(
+                200, json={"status": "SUCCESS", "data": {"yaml": "template: {}"}}
+            )
+        )
+
+        await client.get_template("account.shared_tmpl")
+        params = dict(route.calls[0].request.url.params)
+        assert params["accountIdentifier"] == "acc123"
+        assert "orgIdentifier" not in params
+        assert "projectIdentifier" not in params
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_get_template_org_prefix_omits_project(self, client: HarnessClient) -> None:
+        route = respx.get(
+            "https://app.harness.io/template/api/templates/org_tmpl"
+        ).mock(
+            return_value=httpx.Response(
+                200, json={"status": "SUCCESS", "data": {"yaml": "template: {}"}}
+            )
+        )
+
+        await client.get_template("org.org_tmpl")
+        params = dict(route.calls[0].request.url.params)
+        assert params["orgIdentifier"] == "default"
+        assert "projectIdentifier" not in params
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_get_template_404_raises(self, client: HarnessClient) -> None:
+        respx.get(
+            "https://app.harness.io/template/api/templates/missing"
+        ).mock(return_value=httpx.Response(404, text="not found"))
+
+        with pytest.raises(HarnessAPIError) as exc_info:
+            await client.get_template("missing")
+        assert exc_info.value.status_code == 404
+
+
 class TestTestConnection:
     @respx.mock
     @pytest.mark.asyncio

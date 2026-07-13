@@ -1,0 +1,49 @@
+{
+  "status": "SUCCESS",
+  "data": {
+    "totalPages": 1,
+    "totalItems": 2,
+    "pageItemCount": 2,
+    "pageSize": 100,
+    "content": [
+      {
+        "service": {
+          "accountId": "acc_test_123",
+          "identifier": "payments_api",
+          "orgIdentifier": "default",
+          "projectIdentifier": "hawkeye_project",
+          "name": "Payments API",
+          "description": "Core payments microservice",
+          "deleted": false,
+          "tags": {
+            "team": "payments"
+          },
+          "yaml": "service:\n  name: Payments API\n  identifier: payments_api\n  serviceDefinition:\n    type: Kubernetes\n    spec:\n      manifests:\n        - manifest:\n            identifier: k8s_manifests\n            type: K8sManifest\n            spec:\n              store:\n                type: Github\n                spec:\n                  connectorRef: account.GHConnector\n                  repoName: payments-manifests\n      artifacts:\n        primary:\n          sources:\n            - identifier: acr\n              type: Acr\n",
+          "storeType": "INLINE"
+        },
+        "createdAt": 1690000000000,
+        "lastModifiedAt": 1749000000000
+      },
+      {
+        "service": {
+          "accountId": "acc_test_123",
+          "identifier": "notifications_worker",
+          "orgIdentifier": "default",
+          "projectIdentifier": "hawkeye_project",
+          "name": "Notifications Worker",
+          "description": null,
+          "deleted": false,
+          "tags": {},
+          "yaml": "service:\n  name: Notifications Worker\n  identifier: notifications_worker\n  serviceDefinition:\n    type: Kubernetes\n",
+          "storeType": "REMOTE"
+        },
+        "createdAt": 1695000000000,
+        "lastModifiedAt": 1735000000000
+      }
+    ],
+    "pageIndex": 0,
+    "empty": false
+  },
+  "metaData": null,
+  "correlationId": "dd44ee55-0000-1111-2222-333344445555"
+}

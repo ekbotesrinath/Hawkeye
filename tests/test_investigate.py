@@ -786,6 +786,19 @@ class TestTimingDelta:
         result = _timing_delta(s1, s2)
         assert result == "—"
 
+    def test_faster_second_shows_clean_negative_seconds(self) -> None:
+        """-1500ms must render as -1s, not floor-divided to -2s."""
+        s1 = _make_stage(start_ts=_NOW_MS - 10_000, end_ts=_NOW_MS)
+        s2 = _make_stage(start_ts=_NOW_MS - 8_500, end_ts=_NOW_MS)
+        result = _timing_delta(s1, s2)
+        assert result == "-1s"
+
+    def test_faster_second_negative_minutes(self) -> None:
+        s1 = _make_stage(start_ts=_NOW_MS - 200_000, end_ts=_NOW_MS)
+        s2 = _make_stage(start_ts=_NOW_MS - 65_000, end_ts=_NOW_MS)
+        result = _timing_delta(s1, s2)
+        assert result == "-2m 15s"
+
 
 # ------------------------------------------------------------------
 # hawkeye_get_failure_pattern

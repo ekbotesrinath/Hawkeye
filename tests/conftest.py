@@ -53,3 +53,35 @@ def sample_pipeline_list_response() -> list:
 def sample_input_sets_response() -> list:
     """Realistic Harness input sets listing response."""
     return json.loads((FIXTURES_DIR / "input_sets.json").read_text(encoding="utf-8"))
+
+
+@pytest.fixture()
+def sample_template_list_response() -> dict:
+    """Realistic Harness template listing response (enveloped)."""
+    return json.loads((FIXTURES_DIR / "template_list.json").read_text(encoding="utf-8"))
+
+
+@pytest.fixture()
+def sample_secret_list_response() -> dict:
+    """Realistic Harness v2 secrets listing response (enveloped)."""
+    return json.loads((FIXTURES_DIR / "secret_list.json").read_text(encoding="utf-8"))
+
+
+@pytest.fixture()
+def sample_environment_list_response() -> dict:
+    """Realistic Harness environmentsV2 listing response (enveloped)."""
+    return json.loads((FIXTURES_DIR / "environment_list.json").read_text(encoding="utf-8"))
+
+
+@pytest.fixture()
+def sample_infrastructure_list_response() -> dict:
+    """Realistic Harness infrastructures listing response (enveloped)."""
+    return json.loads(
+        (FIXTURES_DIR / "infrastructure_list.json").read_text(encoding="utf-8")
+    )
+
+
+@pytest.fixture()
+def sample_service_list_response() -> dict:
+    """Realistic Harness servicesV2 listing response (enveloped)."""
+    return json.loads((FIXTURES_DIR / "service_list.json").read_text(encoding="utf-8"))

@@ -1,0 +1,53 @@
+{
+  "status": "SUCCESS",
+  "data": {
+    "totalPages": 1,
+    "totalItems": 2,
+    "pageItemCount": 2,
+    "pageSize": 100,
+    "content": [
+      {
+        "environment": {
+          "accountId": "acc_test_123",
+          "orgIdentifier": "default",
+          "projectIdentifier": "hawkeye_project",
+          "identifier": "prod",
+          "name": "Production",
+          "description": "Production environment",
+          "color": "#00ade4",
+          "type": "Production",
+          "deleted": false,
+          "tags": {
+            "tier": "1"
+          },
+          "yaml": "environment:\n  name: Production\n  identifier: prod\n  type: Production\n  variables:\n    - name: region\n      type: String\n      value: eastus2\n    - name: registry_token\n      type: Secret\n      value: account.global_git_hub_pat\n",
+          "storeType": "INLINE"
+        },
+        "createdAt": 1690000000000,
+        "lastModifiedAt": 1750000000000
+      },
+      {
+        "environment": {
+          "accountId": "acc_test_123",
+          "orgIdentifier": "default",
+          "projectIdentifier": "hawkeye_project",
+          "identifier": "staging",
+          "name": "Staging",
+          "description": null,
+          "color": "#00ade4",
+          "type": "PreProduction",
+          "deleted": false,
+          "tags": {},
+          "yaml": "environment:\n  name: Staging\n  identifier: staging\n  type: PreProduction\n",
+          "storeType": "INLINE"
+        },
+        "createdAt": 1690000000000,
+        "lastModifiedAt": 1740000000000
+      }
+    ],
+    "pageIndex": 0,
+    "empty": false
+  },
+  "metaData": null,
+  "correlationId": "bb22cc33-0000-1111-2222-333344445555"
+}

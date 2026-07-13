@@ -15,6 +15,7 @@ from providers.harness.parser import (
     parse_input_sets,
     parse_pipeline_list,
     parse_recent_executions,
+    parse_template_list,
     _extract_steps_for_stage,
 )
 
@@ -399,6 +400,77 @@ class TestParseInputSets:
 
 
 # ------------------------------------------------------------------
+# parse_template_list
+# ------------------------------------------------------------------
+
+
+class TestParseTemplateList:
+    def test_parse_list(self, sample_template_list_response: dict) -> None:
+        items = sample_template_list_response["data"]["content"]
+        result = parse_template_list(items)
+        assert len(result) == 3
+
+    def test_first_template_fields(self, sample_template_list_response: dict) -> None:
+        items = sample_template_list_response["data"]["content"]
+        result = parse_template_list(items)
+        t = result[0]
+        assert t.identifier == "deploy_step_template"
+        assert t.name == "Deploy Step Template"
+        assert t.version_label == "v2"
+        assert t.template_entity_type == "Step"
+        assert t.child_type == "K8sRollingDeploy"
+        assert t.scope == "project"
+        assert t.stable_template is True
+        assert t.tags == {"team": "platform"}
+        assert t.store_type == "INLINE"
+        assert t.last_updated == 1700000000000
+
+    def test_org_scope_and_remote_store(
+        self, sample_template_list_response: dict
+    ) -> None:
+        items = sample_template_list_response["data"]["content"]
+        result = parse_template_list(items)
+        t = result[2]
+        assert t.scope == "org"
+        assert t.store_type == "REMOTE"
+        assert t.child_type is None
+
+    def test_scope_inferred_when_template_scope_missing(self) -> None:
+        items = [
+            {"identifier": "acct_tmpl", "name": "A"},
+            {"identifier": "org_tmpl", "name": "B", "orgIdentifier": "default"},
+            {
+                "identifier": "proj_tmpl",
+                "name": "C",
+                "orgIdentifier": "default",
+                "projectIdentifier": "proj",
+            },
+        ]
+        result = parse_template_list(items)
+        assert result[0].scope == "account"
+        assert result[1].scope == "org"
+        assert result[2].scope == "project"
+
+    def test_missing_fields_use_defaults(self) -> None:
+        result = parse_template_list([{"identifier": "t1"}])
+        t = result[0]
+        assert t.name == ""
+        assert t.version_label == ""
+        assert t.stable_template is False
+        assert t.tags == {}
+        assert t.store_type == "INLINE"
+        assert t.last_updated is None
+
+    def test_non_dict_entries_skipped(self) -> None:
+        result = parse_template_list(["garbage", {"identifier": "t1", "name": "T1"}])  # type: ignore[list-item]
+        assert len(result) == 1
+        assert result[0].identifier == "t1"
+
+    def test_empty_list(self) -> None:
+        assert parse_template_list([]) == []
+
+
+# ------------------------------------------------------------------
 # parse_recent_executions
 # ------------------------------------------------------------------
 
@@ -439,6 +511,45 @@ class TestParseRecentExecutions:
         ]
         result = parse_recent_executions(data)
         assert result[0].status == ExecutionStatus.FAILED
+
+    def test_parse_stages_from_layout_node_map(self) -> None:
+        """Summary items carry layoutNodeMap — stages must parse from it so
+        history-based analysis (failure hotspots, same-stage detection) works."""
+        data = {
+            "content": [
+                {
+                    "pipelineExecutionSummary": {
+                        "planExecutionId": "ex3",
+                        "pipelineIdentifier": "p3",
+                        "name": "P3",
+                        "status": "Failed",
+                        "startingNodeId": "n1",
+                        "layoutNodeMap": {
+                            "n1": {
+                                "nodeIdentifier": "build",
+                                "name": "Build",
+                                "status": "Success",
+                                "nodeType": "CI",
+                                "edgeLayoutList": {"nextIds": ["n2"]},
+                            },
+                            "n2": {
+                                "nodeIdentifier": "deploy",
+                                "name": "Deploy",
+                                "status": "Failed",
+                                "nodeType": "Deployment",
+                                "edgeLayoutList": {"nextIds": []},
+                            },
+                        },
+                    }
+                }
+            ]
+        }
+        result = parse_recent_executions(data)
+        stages = result[0].stages
+        assert [s.name for s in stages] == ["Build", "Deploy"]
+        assert stages[1].status == ExecutionStatus.FAILED
+        # No executionGraph in summary items — steps stay empty
+        assert stages[1].steps == []
 
 
 # ------------------------------------------------------------------

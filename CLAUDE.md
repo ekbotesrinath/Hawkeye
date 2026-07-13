@@ -18,9 +18,9 @@ tools/*.py → providers/base.py → providers/harness/*.py → Harness API
 - `providers/` — abstract base + Harness implementation
 - `config/` — multi-tenant profile management (stored in `~/.hawkeye/`)
 
-## Tools (19 total)
+## Tools (35 total)
 
-### Execution (5)
+### Execution (8)
 - `hawkeye_get_execution` — full execution detail from ID or URL
 - `hawkeye_get_stage_detail` — step-by-step stage breakdown
 - `hawkeye_get_step_logs` — raw log output (last 200 lines, secrets masked)
@@ -34,6 +34,10 @@ tools/*.py → providers/base.py → providers/harness/*.py → Harness API
 - `hawkeye_get_pipeline_definition` — pipeline YAML (supports branch)
 - `hawkeye_list_pipelines` — list/search pipelines by name or module
 - `hawkeye_get_input_sets` — available input sets for a pipeline
+
+### Template (2)
+- `hawkeye_get_template` — template YAML by identifier (fuzzy match, optional version, project/org/account scope)
+- `hawkeye_list_templates` — list/search templates by name or type (Step, Stage, Pipeline, …)
 
 ### Investigation (4)
 - `hawkeye_diagnose` — unified diagnosis tool (summary/full mode, optional console logs)
@@ -53,6 +57,25 @@ tools/*.py → providers/base.py → providers/harness/*.py → Harness API
 - `hawkeye_list_connectors` — list connectors with connectivity status
 - `hawkeye_check_connector` — test connectivity of a specific connector
 
+### Secrets (2) — metadata only, never values
+- `hawkeye_list_secrets` — list secret metadata by search/type/scope
+- `hawkeye_check_secret` — resolve a secret ref (e.g. `account.global_git_hub_pat` from `<+secrets.getValue(...)>`) to type, secret manager, and created/last-modified timestamps (fuzzy match)
+
+### Environment (6)
+- `hawkeye_list_environments` — list environments (Production/PreProduction)
+- `hawkeye_get_environment` — environment YAML with variables/overrides (fuzzy match)
+- `hawkeye_list_infrastructures` — infrastructure definitions for an environment
+- `hawkeye_get_infrastructure` — infrastructure YAML (connectorRef, cluster/namespace)
+- `hawkeye_list_services` — list services
+- `hawkeye_get_service` — service YAML (manifests, artifacts, variables)
+
+### Deeplinks (1)
+- `hawkeye_build_link` — build Harness UI deep links
+
+### Terraform (2)
+- `hawkeye_parse_terraform_plan` — parse Terraform plan output
+- `hawkeye_release_precheck_report` — release precheck report
+
 ### Utility (1)
 - `ping` — health check
 
@@ -69,7 +92,7 @@ tools/*.py → providers/base.py → providers/harness/*.py → Harness API
 
 ### Toolset Filtering (`HAWKEYE_TOOLSETS`)
 Comma-separated list of toolset names to register. Default (unset/empty): all.
-- Toolsets: `execution`, `investigation`, `pipeline`, `account`, `deeplinks`, `terraform`, `delegates`, `connectors`
+- Toolsets: `execution`, `investigation`, `pipeline`, `templates`, `account`, `deeplinks`, `terraform`, `delegates`, `connectors`, `secrets`, `environments`
 - `account` + `ping` are always registered
 - Unknown names are warned and ignored
 - Example: `HAWKEYE_TOOLSETS=execution,investigation` — only load execution + investigation + account + ping

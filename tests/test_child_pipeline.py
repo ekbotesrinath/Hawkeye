@@ -64,6 +64,7 @@ def _make_stage(
     steps: list[StepExecution] | None = None,
     failure_info: FailureInfo | None = None,
     identifier: str | None = None,
+    child_execution_id: str | None = None,
 ) -> StageExecution:
     return StageExecution(
         stage_id=stage_id,
@@ -75,6 +76,7 @@ def _make_stage(
         stage_type=stage_type,
         failure_info=failure_info,
         steps=steps or [],
+        child_execution_id=child_execution_id,
     )
 
 
@@ -613,6 +615,215 @@ class TestFormatInvestigationWithChildFindings:
 # ==================================================================
 # hawkeye_get_all_stages Pipeline indicator
 # ==================================================================
+
+
+class TestParseChildExecutionIdFromLayout:
+    """Layout nodes carry stepDetails.childPipelineExecutionDetails — the
+    authoritative child execution reference for orchestrator pipelines."""
+
+    @staticmethod
+    def _orchestrator_response(node_extra: dict) -> dict:
+        return {
+            "pipelineExecutionSummary": {
+                "planExecutionId": "parent1",
+                "pipelineIdentifier": "orchestrator",
+                "name": "orchestrator",
+                "status": "Success",
+                "startingNodeId": "n1",
+                "layoutNodeMap": {
+                    "n1": {
+                        "nodeIdentifier": "deploy_child",
+                        "name": "deploy_child",
+                        "nodeType": "Pipeline",
+                        "status": "Success",
+                        "edgeLayoutList": {"nextIds": []},
+                        **node_extra,
+                    }
+                },
+            }
+        }
+
+    def test_child_execution_id_parsed(self) -> None:
+        from providers.harness.parser import parse_execution_detail
+
+        data = self._orchestrator_response({
+            "stepDetails": {
+                "childPipelineExecutionDetails": {
+                    "planExecutionId": "child_plan_1",
+                    "orgId": "platform_services",
+                    "projectId": "Gail",
+                }
+            }
+        })
+        result = parse_execution_detail(data)
+        assert result.stages[0].child_execution_id == "child_plan_1"
+
+    def test_missing_step_details_gives_none(self) -> None:
+        from providers.harness.parser import parse_execution_detail
+
+        result = parse_execution_detail(self._orchestrator_response({}))
+        assert result.stages[0].child_execution_id is None
+
+
+class TestFollowChildPipelinesOrchestrator:
+    """Orchestrator support: ALL executed Pipeline-type stages are followed,
+    preferring the layout-node child execution ID over graph scanning."""
+
+    @pytest.mark.asyncio
+    async def test_follows_successful_pipeline_stage(self) -> None:
+        parent = _make_execution(
+            status=ExecutionStatus.SUCCESS,
+            stages=[
+                _make_stage(
+                    stage_id="stg1",
+                    name="deploy_sec_parser",
+                    stage_type="Pipeline",
+                    status=ExecutionStatus.SUCCESS,
+                    child_execution_id="child_ok_1",
+                ),
+            ],
+        )
+        child_execution = _make_execution(
+            execution_id="child_ok_1",
+            status=ExecutionStatus.SUCCESS,
+            stages=[_make_stage(stage_id="deploy", name="Deploy")],
+            pipeline_name="cd_sec_parser",
+        )
+        mock_provider = AsyncMock()
+        mock_provider.get_execution = AsyncMock(return_value=child_execution)
+
+        findings = await _follow_child_pipelines(parent, {}, mock_provider)
+
+        assert "stg1" in findings
+        assert findings["stg1"]["child_execution"] == child_execution
+        assert findings["stg1"]["child_failed_steps"] == []
+        # No failed steps in the child — no step-log calls
+        mock_provider.get_step_logs.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_layout_child_id_preferred_over_graph_scan(self) -> None:
+        parent = _make_execution(
+            status=ExecutionStatus.FAILED,
+            stages=[
+                _make_stage(
+                    stage_id="stg1",
+                    name="deploy_child",
+                    identifier="deploy_child",
+                    stage_type="Pipeline",
+                    status=ExecutionStatus.FAILED,
+                    child_execution_id="layout_child_id",
+                ),
+            ],
+        )
+        # Graph carries a different (stale) reference — layout must win
+        raw_node_map = {
+            "uuid1": {
+                "name": "deploy_child",
+                "identifier": "deploy_child",
+                "stepType": "Pipeline",
+                "baseFqn": "pipeline.stages.deploy_child",
+                "outcomes": {"output": {"pipelineExecutionId": "graph_child_id"}},
+            }
+        }
+        child_execution = _make_execution(
+            execution_id="layout_child_id", status=ExecutionStatus.FAILED
+        )
+        mock_provider = AsyncMock()
+        mock_provider.get_execution = AsyncMock(return_value=child_execution)
+
+        findings = await _follow_child_pipelines(parent, raw_node_map, mock_provider)
+
+        mock_provider.get_execution.assert_awaited_once_with("layout_child_id")
+        assert "stg1" in findings
+
+    @pytest.mark.asyncio
+    async def test_skipped_pipeline_stage_not_followed(self) -> None:
+        parent = _make_execution(
+            stages=[
+                _make_stage(
+                    stage_id="stg1",
+                    stage_type="Pipeline",
+                    status=ExecutionStatus.SKIPPED,
+                ),
+            ],
+        )
+        mock_provider = AsyncMock()
+        findings = await _follow_child_pipelines(parent, {}, mock_provider)
+        assert findings == {}
+        mock_provider.get_execution.assert_not_awaited()
+
+    def test_healthy_child_stages_rendered_in_report(self) -> None:
+        child_execution = _make_execution(
+            execution_id="child_ok_1",
+            status=ExecutionStatus.SUCCESS,
+            stages=[_make_stage(stage_id="deploy", name="Deploy SEC Parser")],
+            pipeline_name="cd_sec_parser",
+            run_sequence=88,
+        )
+        parent = _make_execution(
+            status=ExecutionStatus.SUCCESS,
+            stages=[
+                _make_stage(
+                    stage_id="stg1",
+                    name="deploy_sec_parser",
+                    stage_type="Pipeline",
+                    child_execution_id="child_ok_1",
+                ),
+            ],
+        )
+        result = _format_investigation(
+            parent,
+            [],
+            {},
+            [],
+            child_findings={
+                "stg1": {
+                    "child_execution": child_execution,
+                    "child_failed_steps": [],
+                    "child_step_details": {},
+                }
+            },
+        )
+        assert "Child Pipeline Details" in result
+        assert "cd_sec_parser" in result
+        assert "Run #88" in result
+        assert "Deploy SEC Parser" in result
+
+
+class TestChildIdSurfacedInFormatters:
+    def test_format_execution_shows_child_id(self) -> None:
+        from tools.executions import _format_execution
+
+        execution = _make_execution(
+            stages=[
+                _make_stage(
+                    stage_id="stg1",
+                    name="deploy_child",
+                    stage_type="Pipeline",
+                    child_execution_id="child_abc",
+                ),
+            ],
+        )
+        result = _format_execution(execution)
+        assert "child_abc" in result
+        assert "hawkeye_get_child_execution" in result
+
+    def test_format_all_stages_shows_child_id(self) -> None:
+        from tools.executions import _format_all_stages
+
+        execution = _make_execution(
+            stages=[
+                _make_stage(
+                    stage_id="stg1",
+                    name="deploy_child",
+                    stage_type="Pipeline",
+                    child_execution_id="child_abc",
+                ),
+            ],
+        )
+        result = _format_all_stages(execution, {})
+        assert "↳ Child Pipeline" in result
+        assert "child_abc" in result
 
 
 class TestAllStagesPipelineIndicator:

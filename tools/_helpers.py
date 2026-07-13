@@ -144,6 +144,18 @@ def format_seconds(total_seconds: int) -> str:
     return f"{seconds}s"
 
 
+def format_date(ts: int | None) -> str:
+    """Format a Unix-ms timestamp as an absolute UTC date: '2024-03-02'."""
+    if ts is None:
+        return "—"
+    from datetime import UTC, datetime
+
+    try:
+        return datetime.fromtimestamp(ts / 1000, tz=UTC).strftime("%Y-%m-%d")
+    except (OverflowError, OSError, ValueError):
+        return "—"
+
+
 def format_relative_time(ts: int | None) -> str:
     """Format a Unix-ms timestamp as relative time: '2h ago', '1d ago', etc."""
     if ts is None:
@@ -213,8 +225,19 @@ async def resolve_pipeline_id(pipeline_id: str) -> str:
     from core.fuzzy import fuzzy_match, fuzzy_suggest
 
     provider = await get_provider()
+
+    # The project listing is paginated, so an exact identifier may not appear
+    # in an unfiltered page.  Search server-side for the requested ID first —
+    # an exact hit passes through without fuzzy matching.
+    searched = await provider.list_pipelines(search=pipeline_id)
+    searched_ids = [p.identifier for p in searched]
+    if pipeline_id in searched_ids:
+        return pipeline_id
+
     pipelines = await provider.list_pipelines()
     identifiers = [p.identifier for p in pipelines]
+    # Merge search hits so fuzzy matching sees pipelines beyond the first page
+    identifiers.extend(i for i in searched_ids if i not in identifiers)
 
     # No pipelines listed — pass through as-is
     if not identifiers:
@@ -236,3 +259,48 @@ async def resolve_pipeline_id(pipeline_id: str) -> str:
             f"Pipeline '{pipeline_id}' not found. Did you mean: {names}?"
         )
     raise ValueError(f"Pipeline '{pipeline_id}' not found and no similar pipelines exist.")
+
+
+def fuzzy_resolve_identifier(
+    requested: str,
+    candidates: list[tuple[str, str]],
+    entity_label: str,
+    scope_hint: str = "",
+) -> str:
+    """Resolve a possibly-fuzzy identifier against (identifier, name) pairs.
+
+    Mirrors ``resolve_pipeline_id``: exact identifiers pass through, partial
+    identifiers or display names are fuzzy-matched.  Returns *requested*
+    unchanged when *candidates* is empty (e.g. listing unsupported).  Raises
+    ``ValueError`` with suggestions when candidates exist but nothing matches.
+    """
+    from core.fuzzy import fuzzy_match, fuzzy_suggest
+
+    if not candidates:
+        return requested
+
+    identifiers = [ident for ident, _name in candidates]
+    if requested in identifiers:
+        return requested
+
+    match = fuzzy_match(requested, identifiers)
+    if match is not None:
+        return match.name
+
+    # Fall back to display names, mapped back to identifiers
+    name_to_id = {name: ident for ident, name in candidates if name}
+    name_match = fuzzy_match(requested, list(name_to_id.keys()))
+    if name_match is not None:
+        return name_to_id[name_match.name]
+
+    where = f" in {scope_hint}" if scope_hint else ""
+    suggestions = fuzzy_suggest(requested, identifiers, max_suggestions=3)
+    if suggestions:
+        names = ", ".join(f"`{s.name}`" for s in suggestions)
+        raise ValueError(
+            f"{entity_label} '{requested}' not found{where}. Did you mean: {names}?"
+        )
+    raise ValueError(
+        f"{entity_label} '{requested}' not found and no similar "
+        f"{entity_label.lower()}s exist{where}."
+    )
