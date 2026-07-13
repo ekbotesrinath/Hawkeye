@@ -8,12 +8,12 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from mcp.server.fastmcp import FastMCP
 
 from core.fuzzy import fuzzy_match, fuzzy_suggest
-from tools._helpers import format_relative_time, get_provider, run_tool
+from tools._helpers import READ_ONLY_ANNOTATIONS, format_relative_time, get_provider, run_tool
 
 logger = logging.getLogger(__name__)
 
@@ -27,14 +27,14 @@ def _format_absolute_time(ts: int | None) -> str:
     """Format a Unix-ms timestamp as an absolute ISO-like string."""
     if ts is None:
         return "—"
-    dt = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+    dt = datetime.fromtimestamp(ts / 1000, tz=UTC)
     return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 def register_delegate_tools(mcp: FastMCP) -> None:
     """Register all delegate tools on the MCP server."""
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def hawkeye_list_delegates() -> str:
         """List all delegate groups with health status.
 
@@ -72,7 +72,7 @@ def register_delegate_tools(mcp: FastMCP) -> None:
 
         return await run_tool("hawkeye_list_delegates", params, _run())
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def hawkeye_check_delegate(name: str) -> str:
         """Check health of a specific delegate by name (supports fuzzy matching).
 

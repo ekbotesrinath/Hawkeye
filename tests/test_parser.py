@@ -9,6 +9,7 @@ from core.models import (
     PipelineSummary,
 )
 from providers.harness.parser import (
+    _extract_steps_for_stage,
     build_execution_url,
     parse_execution_detail,
     parse_execution_graph,
@@ -16,7 +17,6 @@ from providers.harness.parser import (
     parse_pipeline_list,
     parse_recent_executions,
     parse_template_list,
-    _extract_steps_for_stage,
 )
 
 # ------------------------------------------------------------------

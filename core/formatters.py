@@ -1,15 +1,17 @@
 """Shared formatting utilities for Hawkeye MCP tools.
 
-Centralises duration formatting, relative time, status icons, table generation,
-and log truncation so every tool produces consistent output.
+The single home for duration formatting, relative time, status icons,
+table generation, and log truncation.  ``tools/_helpers.py`` and
+``providers/harness/parser.py`` re-export from here — do not duplicate
+these helpers elsewhere.
 """
 
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
 
 from core.models import ExecutionStatus, PipelineExecution
-
 
 # ------------------------------------------------------------------
 # Duration formatting
@@ -30,10 +32,10 @@ def format_duration(start_ts: int | None, end_ts: int | None) -> str:
     if elapsed_ms < 0:
         return "—"
     total_seconds = elapsed_ms // 1000
-    return _format_seconds(total_seconds)
+    return format_seconds(total_seconds)
 
 
-def _format_seconds(total_seconds: int) -> str:
+def format_seconds(total_seconds: int) -> str:
     """Format total seconds into ``12m 34s`` style."""
     if total_seconds < 0:
         return "—"
@@ -48,8 +50,18 @@ def _format_seconds(total_seconds: int) -> str:
 
 
 # ------------------------------------------------------------------
-# Relative time
+# Dates and relative time
 # ------------------------------------------------------------------
+
+
+def format_date(ts: int | None) -> str:
+    """Format a Unix-ms timestamp as an absolute UTC date: '2024-03-02'."""
+    if ts is None:
+        return "—"
+    try:
+        return datetime.fromtimestamp(ts / 1000, tz=UTC).strftime("%Y-%m-%d")
+    except (OverflowError, OSError, ValueError):
+        return "—"
 
 
 def format_relative_time(ts: int | None) -> str:
@@ -105,6 +117,11 @@ def format_status_icon(status: ExecutionStatus) -> str:
     return _STATUS_ICONS.get(status, "❓")
 
 
+def format_status_label(status: ExecutionStatus) -> str:
+    """Map execution status to ``<icon> <NAME>`` display form."""
+    return f"{format_status_icon(status)} {status.value.upper()}"
+
+
 # ------------------------------------------------------------------
 # Execution table
 # ------------------------------------------------------------------
@@ -147,3 +164,19 @@ def truncate_logs(log_text: str, max_lines: int = 200) -> str:
         f"... ({len(lines) - max_lines} lines truncated) ...\n"
         + "\n".join(truncated)
     )
+
+
+def truncate_to_tail(raw_logs: str, max_lines: int = 100) -> str:
+    """Return the last *max_lines* lines from raw log text.
+
+    If the log has fewer than *max_lines*, return it all.
+    If truncated, prepend a note showing how many lines were omitted.
+    """
+    if not raw_logs:
+        return raw_logs
+    lines = raw_logs.splitlines()
+    if len(lines) <= max_lines:
+        return raw_logs
+    truncated = lines[-max_lines:]
+    header = f"... ({len(lines) - max_lines} lines above omitted, showing last {max_lines})\n"
+    return header + "\n".join(truncated)

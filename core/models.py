@@ -42,6 +42,20 @@ class ExecutionStatus(StrEnum):
             return cls.UNKNOWN
 
 
+# Canonical status groupings shared across tools — define once here, not
+# per-module.
+FAILED_STATUSES: frozenset[ExecutionStatus] = frozenset({
+    ExecutionStatus.FAILED,
+    ExecutionStatus.ERRORED,
+    ExecutionStatus.EXPIRED,
+})
+
+SKIPPED_STATUSES: frozenset[ExecutionStatus] = frozenset({
+    ExecutionStatus.SKIPPED,
+    ExecutionStatus.NOT_STARTED,
+})
+
+
 class FailureInfo(BaseModel):
     """Failure details for a stage or step."""
 
@@ -232,11 +246,17 @@ class DelegateInfo(BaseModel):
     identifier: str = Field(description="Delegate group identifier")
     name: str = Field(description="Display name")
     status: str = Field(default="UNKNOWN", description="Connection status")
-    actively_connected: bool = Field(default=False, description="Whether delegate is actively connected")
-    last_heartbeat: int | None = Field(default=None, description="Last heartbeat timestamp in Unix ms")
+    actively_connected: bool = Field(
+        default=False, description="Whether delegate is actively connected"
+    )
+    last_heartbeat: int | None = Field(
+        default=None, description="Last heartbeat timestamp in Unix ms"
+    )
     delegate_type: str = Field(default="", description="Delegate type (KUBERNETES, DOCKER, SHELL)")
     tags: list[str] = Field(default_factory=list, description="Implicit selector tags")
-    instances_connected: int = Field(default=0, description="Number of connected delegate instances")
+    instances_connected: int = Field(
+        default=0, description="Number of connected delegate instances"
+    )
 
 
 class ConnectorInfo(BaseModel):
@@ -246,9 +266,13 @@ class ConnectorInfo(BaseModel):
 
     identifier: str = Field(description="Connector identifier")
     name: str = Field(description="Display name")
-    connector_type: str = Field(default="", description="Connector type (Git, DockerRegistry, Aws, Azure, etc.)")
+    connector_type: str = Field(
+        default="", description="Connector type (Git, DockerRegistry, Aws, Azure, etc.)"
+    )
     status: str = Field(default="UNKNOWN", description="Last connectivity test status")
-    last_tested: int | None = Field(default=None, description="Last connectivity test timestamp in Unix ms")
+    last_tested: int | None = Field(
+        default=None, description="Last connectivity test timestamp in Unix ms"
+    )
     scope: str = Field(default="project", description="Scope: account, org, or project")
     delegate_used: str = Field(default="", description="Delegate used for last connectivity test")
     error_summary: str = Field(default="", description="Error summary from last test")

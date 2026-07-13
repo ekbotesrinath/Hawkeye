@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import pytest
 import httpx
+import pytest
 
 from providers.harness.client import HarnessAPIError
 from tools._helpers import _friendly_error, run_tool
-
 
 # ------------------------------------------------------------------
 # _friendly_error unit tests

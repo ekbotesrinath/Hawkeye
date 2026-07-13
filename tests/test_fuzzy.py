@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import pytest
-
-from core.fuzzy import FuzzyMatch, fuzzy_match, fuzzy_suggest
-
+from core.fuzzy import fuzzy_match, fuzzy_suggest
 
 # ------------------------------------------------------------------
 # Test data

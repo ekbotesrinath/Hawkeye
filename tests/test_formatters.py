@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import time
-from unittest.mock import patch
-
-import pytest
 
 from core.formatters import (
     format_duration,
@@ -14,7 +11,7 @@ from core.formatters import (
     format_status_icon,
     truncate_logs,
 )
-from core.models import ExecutionStatus, PipelineExecution, StageExecution
+from core.models import ExecutionStatus, PipelineExecution
 
 _NOW_MS = int(time.time() * 1000)
 

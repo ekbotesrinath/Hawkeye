@@ -12,10 +12,10 @@ import re
 
 from mcp.server.fastmcp import FastMCP
 
-from core.formatters import format_status_icon
 from core.models import ExecutionStatus, PipelineExecution, StageExecution
+from providers.base import PipelineProvider
 from providers.harness.url_patterns import parse_harness_url
-from tools._helpers import get_provider, run_tool, status_icon
+from tools._helpers import READ_ONLY_ANNOTATIONS, get_provider, run_tool, status_icon
 
 # Regex to extract Terraform plan summary line:
 # "Plan: X to add, Y to change, Z to destroy."
@@ -32,7 +32,7 @@ _NO_CHANGES_RE = re.compile(r"No changes\.", re.IGNORECASE)
 def register_terraform_tools(mcp: FastMCP) -> None:
     """Register Terraform plan parser tools on the MCP server."""
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def hawkeye_parse_terraform_plan(
         execution_id: str = "",
         url: str = "",
@@ -70,7 +70,7 @@ def register_terraform_tools(mcp: FastMCP) -> None:
 
         return await run_tool("hawkeye_parse_terraform_plan", params, _run())
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def hawkeye_release_precheck_report(
         infra_builder_execution_id: str,
         infra_createenv_execution_id: str,
@@ -149,7 +149,7 @@ class TerraformLayer:
 
 async def _extract_terraform_layers(
     execution: PipelineExecution,
-    provider: object,
+    provider: PipelineProvider,
 ) -> list[TerraformLayer]:
     """Extract Terraform plan results from all stages in an execution."""
     layers: list[TerraformLayer] = []
@@ -172,7 +172,9 @@ async def _extract_terraform_layers(
                 for kw in ("terraform", "tf_plan", "tfplan", "plan", "shell")
             ):
                 log_tasks.append(
-                    provider.get_step_logs(execution.plan_execution_id, stage.stage_id, step.step_id)
+                    provider.get_step_logs(
+                        execution.plan_execution_id, stage.stage_id, step.step_id
+                    )
                 )
                 stage_step_map.append((stage, stage.stage_id, step.step_id))
 

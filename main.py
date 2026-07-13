@@ -20,6 +20,7 @@ from collections.abc import Callable
 
 from mcp.server.fastmcp import FastMCP
 
+from tools._helpers import READ_ONLY_ANNOTATIONS
 from tools.account import register_account_tools
 from tools.connectors import register_connector_tools
 from tools.deeplinks import register_deeplink_tools
@@ -61,6 +62,20 @@ _TOOLSET_REGISTRY: dict[str, Callable[[FastMCP], None]] = {
 
 _ALWAYS_REGISTERED: set[str] = {"account"}
 
+# Accept both singular and plural spellings of every toolset name
+_TOOLSET_ALIASES: dict[str, str] = {
+    "executions": "execution",
+    "investigations": "investigation",
+    "pipelines": "pipeline",
+    "template": "templates",
+    "accounts": "account",
+    "deeplink": "deeplinks",
+    "delegate": "delegates",
+    "connector": "connectors",
+    "secret": "secrets",
+    "environment": "environments",
+}
+
 
 def _get_active_toolsets() -> set[str]:
     """Determine which toolsets to register based on HAWKEYE_TOOLSETS env var."""
@@ -73,6 +88,7 @@ def _get_active_toolsets() -> set[str]:
     for name in requested:
         if name == "all":
             return set(_TOOLSET_REGISTRY.keys())
+        name = _TOOLSET_ALIASES.get(name, name)
         if name in _TOOLSET_REGISTRY:
             valid.add(name)
         else:
@@ -95,7 +111,27 @@ def create_server(toolsets: set[str] | None = None) -> FastMCP:
     """
     server = FastMCP(
         "Hawkeye",
-        instructions="Universal pipeline observability MCP server for SRE",
+        instructions=(
+            "Hawkeye is a READ-ONLY pipeline observability server for "
+            "Harness CI/CD. It can inspect executions, logs, pipelines, "
+            "templates, delegates, connectors, secret metadata, and "
+            "environments — it can never trigger, approve, or modify "
+            "anything.\n\n"
+            "Typical workflow:\n"
+            "1. The user pastes a Harness execution URL → call "
+            "hawkeye_diagnose with the URL (mode='summary' for a quick "
+            "look, mode='full' for step details and console logs).\n"
+            "2. Drill down with hawkeye_get_stage_detail / "
+            "hawkeye_get_step_logs, follow chained pipelines with "
+            "hawkeye_get_child_execution.\n"
+            "3. For recurring problems use hawkeye_get_failure_pattern and "
+            "hawkeye_compare_executions.\n"
+            "4. Auth errors in logs referencing <+secrets.getValue(...)> "
+            "can be resolved with hawkeye_check_secret; infrastructure "
+            "issues with hawkeye_list_delegates / hawkeye_check_connector.\n"
+            "Pipeline, environment, service, and secret identifiers accept "
+            "fuzzy names — pass what the user said and Hawkeye resolves it."
+        ),
     )
 
     active = toolsets if toolsets is not None else _get_active_toolsets()
@@ -107,7 +143,7 @@ def create_server(toolsets: set[str] | None = None) -> FastMCP:
             logger.info("Skipped toolset: %s (not in HAWKEYE_TOOLSETS)", name)
 
     # ping is always registered regardless of toolset filter
-    @server.tool()
+    @server.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def ping() -> str:
         """Health check — returns server status."""
         return "Hawkeye MCP server is running"
@@ -126,8 +162,13 @@ def _handle_shutdown(signum: int, _frame: object) -> None:
     sys.exit(0)
 
 
-if __name__ == "__main__":
+def run() -> None:
+    """Console-script entry point (``hawkeye`` command)."""
     signal.signal(signal.SIGINT, _handle_shutdown)
     signal.signal(signal.SIGTERM, _handle_shutdown)
     logger.info("Starting Hawkeye MCP server…")
     mcp.run()
+
+
+if __name__ == "__main__":
+    run()

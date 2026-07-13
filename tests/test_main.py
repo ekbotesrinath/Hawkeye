@@ -6,7 +6,7 @@ import logging
 
 import pytest
 
-from main import _TOOLSET_REGISTRY, create_server
+from main import create_server
 
 
 class TestServerInit:
@@ -154,6 +154,27 @@ class TestToolsetFiltering:
         assert "hawkeye_check_secret" in tools
         assert "hawkeye_list_environments" in tools
         assert "ping" in tools
+
+    def test_all_tools_declare_read_only_annotations(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every tool advertises readOnlyHint=True to MCP clients."""
+        monkeypatch.delenv("HAWKEYE_TOOLSETS", raising=False)
+        server = create_server()
+        tools = server._tool_manager._tools
+        for name, tool in tools.items():
+            annotations = tool.annotations
+            assert annotations is not None, f"{name} has no annotations"
+            assert annotations.readOnlyHint is True, f"{name} not marked read-only"
+
+    def test_toolset_alias_singular_plural(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Singular/plural spellings of toolset names both work."""
+        monkeypatch.setenv("HAWKEYE_TOOLSETS", "executions,secret,environment")
+        server = create_server()
+        tools = server._tool_manager._tools
+        assert "hawkeye_get_execution" in tools
+        assert "hawkeye_check_secret" in tools
+        assert "hawkeye_list_environments" in tools
 
     def test_toolset_filtering(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Only execution + investigation + account (always) + ping are registered."""

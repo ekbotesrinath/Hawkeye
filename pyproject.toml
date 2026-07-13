@@ -1,15 +1,21 @@
 [project]
 name = "hawkeye"
-version = "0.1.0"
+version = "0.2.0"
 description = "Universal pipeline observability MCP server for SRE"
 requires-python = ">=3.12"
+license = { text = "Proprietary" }
 dependencies = [
-    "mcp[cli]>=1.2.0",
-    "httpx>=0.27.0",
-    "pydantic>=2.0",
-    "keyring>=25.0",
-    "rich>=13.0",
+    "mcp[cli]>=1.2.0,<2",
+    "httpx>=0.27.0,<1",
+    "pydantic>=2.0,<3",
+    "keyring>=25.0,<26",
+    "rich>=13.0,<15",
+    # Transitive via mcp — floor pinned for PYSEC-2026-248/249/2280/2281
+    "starlette>=1.3.1",
 ]
+
+[project.scripts]
+hawkeye = "main:run"
 
 [project.optional-dependencies]
 dev = [
@@ -20,11 +26,15 @@ dev = [
     "respx>=0.21",
     "ruff>=0.4",
     "mypy>=1.10",
+    "pip-audit>=2.7",
 ]
 
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["main"]
 
 [tool.setuptools.packages.find]
 include = ["core*", "config*", "providers*", "tools*"]
@@ -32,17 +42,25 @@ include = ["core*", "config*", "providers*", "tools*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-norecursedirs = [".dfin-context"]
 
 [tool.ruff]
 target-version = "py312"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM"]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests: long fixture literals are fine; asserts and hardcoded fake
+# credentials are the point of a test file.
+"tests/*" = ["E501", "S101", "S105", "S106", "S107"]
+# scripts/setup.py prompts for input interactively by design
+"scripts/*" = ["S"]
 
 [tool.mypy]
 python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
+ignore_missing_imports = true
+files = ["core", "providers", "config", "tools", "main.py"]

@@ -22,6 +22,7 @@ from mcp.server.fastmcp import FastMCP
 
 from core.models import EnvironmentSummary, InfrastructureSummary, ServiceSummary
 from tools._helpers import (
+    READ_ONLY_ANNOTATIONS,
     format_relative_time,
     fuzzy_resolve_identifier,
     get_provider,
@@ -40,7 +41,7 @@ async def _resolve_environment_id(environment_id: str) -> str:
 def register_environment_tools(mcp: FastMCP) -> None:
     """Register all environment/infrastructure/service tools on the MCP server."""
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def hawkeye_list_environments(search: str | None = None) -> str:
         """List environments in the current Harness project.
 
@@ -63,7 +64,7 @@ def register_environment_tools(mcp: FastMCP) -> None:
 
         return await run_tool("hawkeye_list_environments", params, _run())
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def hawkeye_get_environment(environment_id: str) -> str:
         """Get the YAML definition of a Harness environment.
 
@@ -88,7 +89,7 @@ def register_environment_tools(mcp: FastMCP) -> None:
 
         return await run_tool("hawkeye_get_environment", params, _run())
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def hawkeye_list_infrastructures(environment_id: str) -> str:
         """List infrastructure definitions for a Harness environment.
 
@@ -116,7 +117,7 @@ def register_environment_tools(mcp: FastMCP) -> None:
 
         return await run_tool("hawkeye_list_infrastructures", params, _run())
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def hawkeye_get_infrastructure(
         infrastructure_id: str, environment_id: str
     ) -> str:
@@ -157,7 +158,7 @@ def register_environment_tools(mcp: FastMCP) -> None:
 
         return await run_tool("hawkeye_get_infrastructure", params, _run())
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def hawkeye_list_services(search: str | None = None) -> str:
         """List services in the current Harness project.
 
@@ -180,7 +181,7 @@ def register_environment_tools(mcp: FastMCP) -> None:
 
         return await run_tool("hawkeye_list_services", params, _run())
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def hawkeye_get_service(service_id: str) -> str:
         """Get the YAML definition of a Harness service.
 

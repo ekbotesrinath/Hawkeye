@@ -18,12 +18,25 @@ import logging
 
 from mcp.server.fastmcp import FastMCP
 
-logger = logging.getLogger(__name__)
-
-from core.models import ExecutionStatus, PipelineExecution, StageExecution
-from providers.harness.parser import extract_node_details, truncate_to_tail
+from core.formatters import truncate_to_tail
+from core.models import (
+    FAILED_STATUSES,
+    SKIPPED_STATUSES,
+    ExecutionStatus,
+    PipelineExecution,
+    StageExecution,
+)
+from providers.harness.parser import extract_node_details
 from providers.harness.url_patterns import parse_harness_url
+from tools._gather import (
+    append_console_logs,
+    build_step_details,
+    enrich_ci_infra,
+    is_pipeline_step_type,
+)
 from tools._helpers import (
+    READ_ONLY_ANNOTATIONS,
+    clamp_limit,
     format_duration_ms,
     format_relative_time,
     get_provider,
@@ -33,30 +46,20 @@ from tools._helpers import (
     status_label,
 )
 
-_MAX_LOG_LINES = 200
+logger = logging.getLogger(__name__)
 
-# Failure statuses that may benefit from console log retrieval
-_FAILED_STATUSES = frozenset({
-    ExecutionStatus.FAILED,
-    ExecutionStatus.ERRORED,
-    ExecutionStatus.EXPIRED,
-})
-
-# Step types that represent child pipeline calls
-_PIPELINE_STEP_TYPES = {"Pipeline", "PipelineStage"}
-
-
-def _is_pipeline_step_type(step_type: str) -> bool:
-    """Return True if step_type represents a child pipeline call."""
-    if step_type in _PIPELINE_STEP_TYPES:
-        return True
-    return "pipeline" in step_type.lower() if step_type else False
+# Backwards-compatible aliases — implementations live in core.models and
+# tools/_gather.py
+_FAILED_STATUSES = FAILED_STATUSES
+_SKIPPED_STATUSES = SKIPPED_STATUSES
+_is_pipeline_step_type = is_pipeline_step_type
+_append_console_logs = append_console_logs
 
 
 def register_execution_tools(mcp: FastMCP) -> None:
     """Register all execution tools on the MCP server."""
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def hawkeye_get_execution(
         execution_id: str = "",
         url: str = "",
@@ -84,7 +87,7 @@ def register_execution_tools(mcp: FastMCP) -> None:
 
         return await run_tool("hawkeye_get_execution", params, _run())
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def hawkeye_get_stage_detail(
         execution_id: str = "",
         stage_id: str = "",
@@ -121,7 +124,7 @@ def register_execution_tools(mcp: FastMCP) -> None:
 
         return await run_tool("hawkeye_get_stage_detail", params, _run())
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def hawkeye_get_step_logs(
         execution_id: str = "",
         stage_id: str = "",
@@ -215,7 +218,7 @@ def register_execution_tools(mcp: FastMCP) -> None:
 
         return await run_tool("hawkeye_get_step_logs", params, _run())
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def hawkeye_get_execution_inputs(
         execution_id: str = "",
         url: str = "",
@@ -244,7 +247,7 @@ def register_execution_tools(mcp: FastMCP) -> None:
 
         return await run_tool("hawkeye_get_execution_inputs", params, _run())
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def hawkeye_list_recent_executions(
         pipeline_id: str,
         limit: int = 10,
@@ -260,6 +263,7 @@ def register_execution_tools(mcp: FastMCP) -> None:
         params = {"pipeline_id": pipeline_id, "limit": limit, "status": status}
 
         async def _run() -> str:
+            safe_limit = clamp_limit(limit)
             resolved_id = await resolve_pipeline_id(pipeline_id)
             status_filter = None
             if status:
@@ -267,7 +271,7 @@ def register_execution_tools(mcp: FastMCP) -> None:
 
             provider = await get_provider()
             executions = await provider.list_recent_executions(
-                resolved_id, limit=limit, status=status_filter
+                resolved_id, limit=safe_limit, status=status_filter
             )
             if not executions:
                 msg = f"No executions found for pipeline `{pipeline_id}`"
@@ -275,11 +279,11 @@ def register_execution_tools(mcp: FastMCP) -> None:
                     msg += f" with status '{status}'"
                 return msg + "."
 
-            return _format_execution_table(pipeline_id, executions, limit)
+            return _format_execution_table(pipeline_id, executions, safe_limit)
 
         return await run_tool("hawkeye_list_recent_executions", params, _run())
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def hawkeye_get_all_stages(
         execution_id: str = "",
         url: str = "",
@@ -310,56 +314,39 @@ def register_execution_tools(mcp: FastMCP) -> None:
                 return f"No stages found in execution `{eid}`."
 
             # Collect failed/expired steps that need detailed info
-            failed_step_tasks: list[tuple[int, int, str, str]] = []  # (stage_idx, step_idx, stage_id, step_id)
-            for si, stage in enumerate(execution.stages):
-                if stage.status in (ExecutionStatus.SKIPPED, ExecutionStatus.NOT_STARTED):
+            failed_step_refs: list[tuple[str, str]] = []
+            for stage in execution.stages:
+                if stage.status in SKIPPED_STATUSES:
                     continue
-                for sti, step in enumerate(stage.steps):
-                    if step.status in _FAILED_STATUSES:
-                        failed_step_tasks.append((si, sti, stage.stage_id, step.step_id))
+                for step in stage.steps:
+                    if step.status in FAILED_STATUSES:
+                        failed_step_refs.append((stage.stage_id, step.step_id))
 
-            # Fetch details for failed steps in parallel + raw graph for CI infra enrichment
-            detail_map: dict[str, str] = {}
-            step_tasks = [
-                provider.get_step_logs(eid, stage_id, step_id)
-                for _si, _sti, stage_id, step_id in failed_step_tasks
-            ]
-            raw_graph_task = provider.get_raw_execution_graph(eid)
-            all_results = await asyncio.gather(
-                raw_graph_task, *step_tasks, return_exceptions=True
+            # Fetch details for failed steps in parallel + raw graph for CI
+            # infra enrichment
+            detail_task = build_step_details(
+                provider, eid, failed_step_refs,
+                unavailable_note="(details unavailable)",
             )
-            raw_node_map = all_results[0] if not isinstance(all_results[0], BaseException) else None
-            step_results = all_results[1:]
-
-            for i, (_si, _sti, stage_id, step_id) in enumerate(failed_step_tasks):
-                raw = step_results[i]
-                if isinstance(raw, BaseException):
-                    detail_map[f"{stage_id}/{step_id}"] = "(details unavailable)"
-                else:
-                    node_data = raw.get("node") if isinstance(raw, dict) else None
-                    subgraph_data = raw.get("subgraph") if isinstance(raw, dict) else None
-                    if node_data:
-                        detail = extract_node_details(node_data, subgraph_data)
-                        api_logs = raw.get("api_logs")
-                        if api_logs:
-                            detail = _append_console_logs(
-                                detail,
-                                str(api_logs),
-                                "Harness Log Service API",
-                            )
-                        detail_map[f"{stage_id}/{step_id}"] = detail
-                    else:
-                        detail_map[f"{stage_id}/{step_id}"] = "(details unavailable)"
+            raw_graph_task = provider.get_raw_execution_graph(eid)
+            results = await asyncio.gather(
+                detail_task, raw_graph_task, return_exceptions=True
+            )
+            detail_map: dict[str, str] = (
+                results[0] if isinstance(results[0], dict) else {}
+            )
+            raw_node_map = results[1] if isinstance(results[1], dict) else None
 
             # Enrich with CI infra nodes for expired stages that had no failed steps
-            if raw_node_map and isinstance(raw_node_map, dict):
-                _enrich_ci_infra_from_raw_graph(execution, failed_step_tasks, detail_map, raw_node_map)
+            if raw_node_map:
+                covered = {stage_id for stage_id, _step_id in failed_step_refs}
+                enrich_ci_infra(execution, covered, detail_map, raw_node_map)
 
             return _format_all_stages(execution, detail_map)
 
         return await run_tool("hawkeye_get_all_stages", params, _run())
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def hawkeye_get_child_execution(
         execution_id: str = "",
         stage_id: str = "",
@@ -449,47 +436,31 @@ def register_execution_tools(mcp: FastMCP) -> None:
             # Build report
             lines = _format_child_execution(execution, stage, child_execution)
 
-            # Get failed step details from child
-            from providers.harness.parser import extract_node_details as _extract_details
-
+            # Get failed step details from child (limited to first 5)
             failed_in_child: list[tuple[str, str]] = []
             for cs in child_execution.stages:
-                if cs.status not in _FAILED_STATUSES:
+                if cs.status not in FAILED_STATUSES:
                     continue
                 for step in cs.steps:
-                    if step.status in _FAILED_STATUSES:
+                    if step.status in FAILED_STATUSES:
                         failed_in_child.append((cs.stage_id, step.step_id))
 
-            if failed_in_child:
-                detail_tasks = [
-                    provider.get_step_logs(child_id, csid, cstid)
-                    for csid, cstid in failed_in_child[:5]
-                ]
-                results = await asyncio.gather(*detail_tasks, return_exceptions=True)
-                for i, (_csid, cstid) in enumerate(failed_in_child[:5]):
-                    raw = results[i]
-                    if isinstance(raw, BaseException):
-                        continue
-                    node_data = raw.get("node") if isinstance(raw, dict) else None
-                    subgraph_data = raw.get("subgraph") if isinstance(raw, dict) else None
-                    if node_data:
-                        lines.append("")
-                        lines.append(f"**Failed Step Details — {cstid}:**")
-                        detail = _extract_details(node_data, subgraph_data)
-                        api_logs = raw.get("api_logs") if isinstance(raw, dict) else None
-                        if api_logs:
-                            detail = _append_console_logs(
-                                detail,
-                                str(api_logs),
-                                "Harness Log Service API",
-                            )
-                        lines.append(detail)
+            child_details = await build_step_details(
+                provider, child_id, failed_in_child[:5], unavailable_note=""
+            )
+            for csid, cstid in failed_in_child[:5]:
+                detail = child_details.get(f"{csid}/{cstid}")
+                if not detail:
+                    continue
+                lines.append("")
+                lines.append(f"**Failed Step Details — {cstid}:**")
+                lines.append(detail)
 
             return "\n".join(lines)
 
         return await run_tool("hawkeye_get_child_execution", params, _run())
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def hawkeye_check_approvals(
         execution_id: str = "",
         url: str = "",
@@ -556,7 +527,11 @@ def _find_approval_nodes(
         for step in stage.steps:
             if step.status in _APPROVAL_STATUSES or _is_approval_step_type(step.step_type):
                 seen_ids.add(step.step_id)
-                raw_node = raw_node_map.get(step.step_id, {}) if isinstance(raw_node_map, dict) else {}
+                raw_node = (
+                    raw_node_map.get(step.step_id, {})
+                    if isinstance(raw_node_map, dict)
+                    else {}
+                )
                 approvers, message = _extract_approval_info(raw_node)
                 approvals.append({
                     "name": step.name,
@@ -689,7 +664,11 @@ def _format_approvals(
 
     # Anything else (expired, aborted, failed approval steps) must still
     # surface — an expired approval gate is a common "pipeline stuck" cause.
-    shown = {ExecutionStatus.APPROVAL_WAITING, ExecutionStatus.SUCCESS, ExecutionStatus.APPROVAL_REJECTED}
+    shown = {
+        ExecutionStatus.APPROVAL_WAITING,
+        ExecutionStatus.SUCCESS,
+        ExecutionStatus.APPROVAL_REJECTED,
+    }
     others = [a for a in approvals if a["status"] not in shown]
     if others:
         lines.append("### Other Approval Steps")
@@ -702,60 +681,6 @@ def _format_approvals(
         lines.append("")
 
     return "\n".join(lines).strip()
-
-
-# ------------------------------------------------------------------
-# CI infrastructure enrichment
-# ------------------------------------------------------------------
-
-_CI_INFRA_STEP_TYPES = {"liteEngineTask"}
-
-
-def _enrich_ci_infra_from_raw_graph(
-    execution: PipelineExecution,
-    failed_step_tasks: list[tuple[int, int, str, str]],
-    detail_map: dict[str, str],
-    raw_node_map: dict,
-) -> None:
-    """Find liteEngineTask nodes for failed/expired stages without step-level detail."""
-    covered_stage_ids = {stage_id for _si, _sti, stage_id, _step_id in failed_step_tasks}
-    uncovered_stages = [
-        s for s in execution.stages
-        if s.status in _FAILED_STATUSES and s.stage_id not in covered_stage_ids
-    ]
-    if not uncovered_stages:
-        return
-
-    uncovered_identifiers = {s.identifier for s in uncovered_stages}
-
-    for _uuid, raw_node in raw_node_map.items():
-        if not isinstance(raw_node, dict):
-            continue
-        if raw_node.get("stepType", "") not in _CI_INFRA_STEP_TYPES:
-            continue
-        if raw_node.get("status", "") not in ("Failed", "Errored", "Expired"):
-            continue
-
-        base_fqn = raw_node.get("baseFqn", "")
-        if not base_fqn:
-            continue
-        fqn_parts = base_fqn.split(".")
-        try:
-            stages_idx = fqn_parts.index("stages")
-            stage_identifier = fqn_parts[stages_idx + 1] if stages_idx + 1 < len(fqn_parts) else None
-        except (ValueError, IndexError):
-            continue
-
-        if stage_identifier not in uncovered_identifiers:
-            continue
-
-        matching_stage = next(
-            (s for s in uncovered_stages if s.identifier == stage_identifier), None
-        )
-        if not matching_stage:
-            continue
-
-        detail_map[f"{matching_stage.stage_id}/liteEngineTask"] = extract_node_details(raw_node)
 
 
 # ------------------------------------------------------------------
@@ -873,43 +798,6 @@ def _format_stage_detail(execution: PipelineExecution, stage: StageExecution) ->
     return "\n".join(lines)
 
 
-def _format_logs(raw_logs: str, execution_id: str, stage_id: str, step_id: str) -> str:
-    """Format step logs with truncation."""
-    if not raw_logs or not raw_logs.strip():
-        return f"No logs available for step `{step_id}` in stage `{stage_id}`."
-
-    log_lines = raw_logs.splitlines()
-    total = len(log_lines)
-    truncated = False
-
-    if total > _MAX_LOG_LINES:
-        log_lines = log_lines[-_MAX_LOG_LINES:]
-        truncated = True
-
-    lines = [f"## Step Logs: `{step_id}`"]
-    lines.append(f"Execution: `{execution_id}` | Stage: `{stage_id}`")
-    if truncated:
-        lines.append(f"⚠️ Showing last {_MAX_LOG_LINES} of {total} lines (truncated)")
-    else:
-        lines.append(f"Lines: {total}")
-    lines.append("")
-    lines.append("```")
-    lines.extend(log_lines)
-    lines.append("```")
-
-    return "\n".join(lines)
-
-
-def _append_console_logs(details: str, raw_logs: str, source: str) -> str:
-    """Append truncated console logs to an existing step detail block."""
-    logs = truncate_to_tail(raw_logs)
-    return (
-        f"{details}\n\n"
-        f"**Console Logs** ({source}):\n"
-        f"```\n{logs}\n```"
-    )
-
-
 def _format_execution_table(
     pipeline_id: str,
     executions: list[PipelineExecution],
@@ -935,10 +823,6 @@ def _format_execution_table(
         )
 
     return "\n".join(lines)
-
-
-_FAILED_STATUSES = frozenset({ExecutionStatus.FAILED, ExecutionStatus.ERRORED, ExecutionStatus.EXPIRED})
-_SKIPPED_STATUSES = frozenset({ExecutionStatus.SKIPPED, ExecutionStatus.NOT_STARTED})
 
 
 def _format_all_stages(
@@ -969,7 +853,10 @@ def _format_all_stages(
         # Check for consecutive skipped stages
         if stage.status in _SKIPPED_STATUSES:
             skipped_run: list[StageExecution] = []
-            while stage_idx < total_stages and execution.stages[stage_idx].status in _SKIPPED_STATUSES:
+            while (
+                stage_idx < total_stages
+                and execution.stages[stage_idx].status in _SKIPPED_STATUSES
+            ):
                 skipped_run.append(execution.stages[stage_idx])
                 stage_idx += 1
             skipped_count += len(skipped_run)
@@ -978,7 +865,10 @@ def _format_all_stages(
                 first_num = stage_idx - len(skipped_run) + 1
                 last_num = stage_idx
                 names = ", ".join(s.name for s in skipped_run)
-                lines.append(f"**Stages {first_num}-{last_num}:** ⏭️ Skipped ({len(skipped_run)} stages)")
+                lines.append(
+                    f"**Stages {first_num}-{last_num}:** "
+                    f"⏭️ Skipped ({len(skipped_run)} stages)"
+                )
                 lines.append(f"  {names}")
                 lines.append("")
             else:
@@ -1000,7 +890,10 @@ def _format_all_stages(
         elif stage.status == ExecutionStatus.RUNNING:
             running_count += 1
 
-        lines.append(f"**Stage {stage_num}: {stage.name}** — {icon} {stage.status.value} ({dur}) [{stage.stage_type}]")
+        lines.append(
+            f"**Stage {stage_num}: {stage.name}** — {icon} "
+            f"{stage.status.value} ({dur}) [{stage.stage_type}]"
+        )
 
         # Pipeline-type indicator (child pipeline)
         if _is_pipeline_step_type(stage.stage_type):
@@ -1020,7 +913,10 @@ def _format_all_stages(
             for step in stage.steps:
                 step_dur = format_duration_ms(step.start_ts, step.end_ts)
                 step_icon = status_icon(step.status)
-                lines.append(f"| {step.name} | {step_icon} {step.status.value} | {step_dur} | {step.step_type} |")
+                lines.append(
+                    f"| {step.name} | {step_icon} {step.status.value}"
+                    f" | {step_dur} | {step.step_type} |"
+                )
 
             # Show inline details for failed steps
             for step in stage.steps:

@@ -7,15 +7,13 @@ per-profile authentication via the OS keyring.
 from __future__ import annotations
 
 import asyncio
-import io
-import json
 import logging
-import re
-import zipfile
+import random
 from typing import Any
 
 import httpx
 
+from core.cache import TTLCache
 from core.credentials import get_token
 from core.models import (
     ConnectorInfo,
@@ -32,8 +30,16 @@ from core.models import (
     ServiceSummary,
     TemplateSummary,
 )
-from providers.base import PipelineProvider
+from providers.base import PipelineProvider, ProviderError
+from providers.harness.graph_search import (
+    candidate_score,
+    extract_log_key,
+    extract_logs_from_zip,
+    stage_matches,
+)
 from providers.harness.parser import (
+    parse_connector_list,
+    parse_delegate_list,
     parse_environment_list,
     parse_execution_detail,
     parse_execution_graph,
@@ -45,31 +51,104 @@ from providers.harness.parser import (
     parse_secret_list,
     parse_service_list,
     parse_template_list,
+    split_scope_prefix,
 )
 
 logger = logging.getLogger(__name__)
 
-_VERSION = "0.1.0"
+
+def _package_version() -> str:
+    """Resolve the installed package version (single source: pyproject.toml)."""
+    try:
+        from importlib.metadata import version
+
+        return version("hawkeye")
+    except Exception:  # pragma: no cover - metadata missing in odd installs
+        return "0.0.0-dev"
+
+
+_VERSION = _package_version()
 _CONNECT_TIMEOUT = 30.0
 _READ_TIMEOUT = 60.0
 _MAX_RETRIES = 3
 _BACKOFF_BASE = 1.0  # seconds
+_MAX_RETRY_AFTER = 30.0  # cap for server-provided Retry-After
 _RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
 _BLOCKED_METHODS = {"PUT", "DELETE", "PATCH"}
+_MAX_CONCURRENT_REQUESTS = 8
 _LOG_DOWNLOAD_MAX_POLLS = 6
 _LOG_DOWNLOAD_POLL_SECONDS = 2.0
+_MAX_LOG_DOWNLOAD_BYTES = 50 * 1024 * 1024  # 50 MB compressed
+
+# Pagination: follow up to this many pages of 100 per listing call
+_PAGE_SIZE = 100
+_MAX_PAGES = 5
+
+# Response caching (per-client instance, so tests are unaffected)
+_LIST_CACHE_TTL = 60  # seconds — listings change rarely within a session
+_EXEC_CACHE_TTL = 600  # seconds — completed executions are immutable
+_PIPELINE_DEF_CACHE_TTL = 300
+
+# Statuses after which an execution can no longer change
+_TERMINAL_STATUSES = frozenset({
+    ExecutionStatus.SUCCESS,
+    ExecutionStatus.FAILED,
+    ExecutionStatus.ERRORED,
+    ExecutionStatus.ABORTED,
+    ExecutionStatus.EXPIRED,
+    ExecutionStatus.APPROVAL_REJECTED,
+    ExecutionStatus.ABORTED_BY_FREEZE,
+    ExecutionStatus.IGNORE_FAILED,
+})
+
+# Read-only enforcement: POST is only permitted for the Harness endpoints
+# that are semantically reads (list/summary/test queries).  Everything else
+# is rejected, so a future code path cannot accidentally trigger, approve,
+# or abort a pipeline.
+_ALLOWED_POST_PATHS: tuple[str, ...] = (
+    "/pipeline/api/pipelines/execution/summary",
+    "/template/api/templates/list",
+    "/ng/api/delegate-setup/listDelegates",
+    "/ng/api/connectors/testConnection/",
+    "/gateway/log-service/blob/download",
+)
 
 
 class ReadOnlyViolationError(Exception):
     """Raised when a non-read HTTP method is attempted."""
 
 
-class HarnessAPIError(Exception):
+def _ensure_post_allowed(path: str) -> None:
+    """Raise unless *path* is an allowlisted read-only POST endpoint."""
+    for allowed in _ALLOWED_POST_PATHS:
+        if path == allowed or (allowed.endswith("/") and path.startswith(allowed)):
+            return
+    raise ReadOnlyViolationError(
+        f"POST to '{path}' is blocked — Hawkeye only allows read-only POST "
+        "endpoints (list/summary/test queries)."
+    )
+
+
+def _retry_wait(attempt: int, retry_after: str | None = None) -> float:
+    """Compute the backoff delay for a retry attempt.
+
+    Honours a server-provided ``Retry-After`` (seconds form, capped), and
+    otherwise applies exponential backoff with jitter.
+    """
+    if retry_after:
+        try:
+            return min(float(retry_after), _MAX_RETRY_AFTER)
+        except ValueError:
+            pass
+    # Jitter is for retry spreading, not cryptography
+    return _BACKOFF_BASE * (2.0**attempt) + random.uniform(0, 0.5)  # noqa: S311
+
+
+class HarnessAPIError(ProviderError):
     """Raised on non-retryable Harness API errors."""
 
     def __init__(self, status_code: int, message: str) -> None:
-        self.status_code = status_code
-        super().__init__(f"Harness API {status_code}: {message}")
+        super().__init__(status_code, f"Harness API {status_code}: {message}")
 
 
 def _raw_node(raw_node_map: dict[str, Any], uuid: str) -> dict[str, Any]:
@@ -78,203 +157,36 @@ def _raw_node(raw_node_map: dict[str, Any], uuid: str) -> dict[str, Any]:
     return dict(raw) if isinstance(raw, dict) else {}
 
 
-def _split_scope_prefix(identifier: str) -> tuple[str, str]:
-    """Split a scope prefix from an entity identifier.
+# Scope-prefix splitting lives in parser.split_scope_prefix — kept under the
+# old private name for existing importers.
+_split_scope_prefix = split_scope_prefix
 
-    Returns (scope, bare_identifier).
-    'account.MyTemplate' -> ('account', 'MyTemplate')
-    'org.MyTemplate'     -> ('org', 'MyTemplate')
-    'MyTemplate'         -> ('project', 'MyTemplate')
+
+async def _download_capped(url: str) -> bytes | None:
+    """Download *url* with a bare HTTP client, capped at a maximum size.
+
+    The signed download link points at external blob storage — it must be
+    fetched WITHOUT the Harness API key header, so a dedicated client (no
+    default headers) is used instead of the authenticated API client.
     """
-    if identifier.startswith("account."):
-        return "account", identifier[len("account."):]
-    if identifier.startswith("org."):
-        return "org", identifier[len("org."):]
-    return "project", identifier
-
-
-def _normalize_lookup_token(value: str) -> str:
-    """Normalize a human or pipeline identifier for fuzzy equality checks."""
-    return re.sub(r"[^a-z0-9]+", "", value.lower())
-
-
-def _tokenize_lookup_value(value: str) -> set[str]:
-    """Split an identifier or display name into normalized word tokens."""
-    return {token for token in re.findall(r"[a-z0-9]+", value.lower()) if token}
-
-
-def _extract_stage_identifier(base_fqn: str) -> str | None:
-    """Extract the stage identifier segment from a baseFqn string."""
-    parts = base_fqn.split(".") if base_fqn else []
-    try:
-        index = parts.index("stages")
-    except ValueError:
-        return None
-    if index + 1 >= len(parts):
-        return None
-    return parts[index + 1]
-
-
-def _stage_matches(
-    stage_id: str,
-    raw_node: dict[str, Any],
-    *,
-    base_fqn: str | None,
-) -> bool:
-    """Return True when a graph node belongs to the requested stage.
-
-    Supports raw execution IDs, pipeline identifiers in ``baseFqn``, and
-    human-facing stage names like ``deploy sifi adapter``.
-    """
-    if not stage_id:
-        return True
-
-    if raw_node.get("parentStepId") == stage_id or raw_node.get("setupId") == stage_id:
-        return True
-
-    if not base_fqn:
-        return False
-
-    stage_lower = stage_id.lower()
-    if stage_lower in base_fqn.lower():
-        return True
-
-    extracted = _extract_stage_identifier(base_fqn)
-    if not extracted:
-        return False
-
-    if _normalize_lookup_token(extracted) == _normalize_lookup_token(stage_id):
-        return True
-
-    stage_tokens = _tokenize_lookup_value(stage_id)
-    extracted_tokens = _tokenize_lookup_value(extracted)
-    return bool(stage_tokens) and stage_tokens.issubset(extracted_tokens)
-
-
-def _candidate_score(node: Any, *, step_id: str, stage_matched: bool, uuid: str) -> int:
-    """Score a matched graph node so the best step candidate wins."""
-    score = 0
-    if uuid == step_id:
-        score += 100
-    if node.identifier == step_id:
-        score += 90
-    if node.name.lower() == step_id.lower():
-        score += 80
-    if stage_matched:
-        score += 40
-    if node.status in {ExecutionStatus.FAILED, ExecutionStatus.ERRORED, ExecutionStatus.EXPIRED}:
-        score += 20
-    return score
-
-
-def _extract_log_key(
-    node_data: dict[str, Any] | None,
-    subgraph_data: dict[str, Any] | None = None,
-) -> str | None:
-    """Extract the first exact Harness console log key from graph data."""
-    for candidate in _iter_log_key_sources(node_data, subgraph_data):
-        executable_responses = candidate.get("executableResponses", [])
-        if not isinstance(executable_responses, list):
-            continue
-        for response in executable_responses:
-            if not isinstance(response, dict):
-                continue
-            async_data = response.get("async", {})
-            if not isinstance(async_data, dict):
-                continue
-            log_keys = async_data.get("logKeys", [])
-            if not isinstance(log_keys, list):
-                continue
-            for log_key in log_keys:
-                if isinstance(log_key, str) and log_key.strip():
-                    return log_key
-
-    for candidate in _iter_log_key_sources(node_data, subgraph_data):
-        log_base_key = candidate.get("logBaseKey")
-        if isinstance(log_base_key, str) and log_base_key.strip():
-            return log_base_key
-    return None
-
-
-def _iter_log_key_sources(
-    node_data: dict[str, Any] | None,
-    subgraph_data: dict[str, Any] | None,
-) -> list[dict[str, Any]]:
-    """Collect graph dictionaries that may contain executableResponses."""
-    sources: list[dict[str, Any]] = []
-    if isinstance(node_data, dict):
-        sources.append(node_data)
-    if isinstance(subgraph_data, dict):
-        sources.append(subgraph_data)
-        node_map = subgraph_data.get("nodeMap", {})
-        if isinstance(node_map, dict):
-            sources.extend(n for n in node_map.values() if isinstance(n, dict))
-    return sources
-
-
-def _extract_logs_from_zip(zip_bytes: bytes) -> str | None:
-    """Extract readable log lines from a Harness logs.zip payload."""
-    try:
-        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as archive:
-            names = sorted(name for name in archive.namelist() if not name.endswith("/"))
-            sections: list[str] = []
-            for name in names:
-                raw = archive.read(name)
-                text = raw.decode("utf-8", errors="replace")
-                lines = _extract_lines_from_ndjson(text)
-                if not lines:
-                    continue
-                if len(names) > 1:
-                    sections.append(f"== {name} ==")
-                sections.extend(lines)
-            return "\n".join(sections).strip() or None
-    except zipfile.BadZipFile:
-        logger.debug("Harness Log Service response was not a valid zip file")
-        return None
-
-
-def _extract_lines_from_ndjson(text: str) -> list[str]:
-    """Convert Harness NDJSON log content into console-like text lines."""
-    lines: list[str] = []
-    for raw_line in text.splitlines():
-        stripped = raw_line.strip()
-        if not stripped:
-            continue
-        try:
-            item = json.loads(stripped)
-        except json.JSONDecodeError:
-            lines.append(raw_line)
-            continue
-        message = _extract_log_message(item)
-        if message:
-            lines.append(message)
-    return lines
-
-
-def _extract_log_message(item: Any) -> str:
-    """Extract the human log message from a Harness NDJSON object."""
-    if isinstance(item, str):
-        return item
-    if not isinstance(item, dict):
-        return str(item)
-
-    message = _first_string(item, ("message", "msg", "text", "log", "out", "content", "data"))
-    nested = item.get("log")
-    if not message and isinstance(nested, dict):
-        message = _extract_log_message(nested)
-    if not message:
-        message = json.dumps(item, separators=(",", ":"), default=str)
-
-    ts = _first_string(item, ("timestamp", "time", "timeStamp", "ts"))
-    return f"{ts} {message}" if ts and ts not in message else message
-
-
-def _first_string(data: dict[str, Any], keys: tuple[str, ...]) -> str:
-    for key in keys:
-        value = data.get(key)
-        if isinstance(value, str) and value:
-            return value
-    return ""
+    timeout = httpx.Timeout(_CONNECT_TIMEOUT, read=_READ_TIMEOUT)
+    async with (
+        httpx.AsyncClient(timeout=timeout, follow_redirects=True) as bare_client,
+        bare_client.stream("GET", url) as resp,
+    ):
+        resp.raise_for_status()
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in resp.aiter_bytes():
+            total += len(chunk)
+            if total > _MAX_LOG_DOWNLOAD_BYTES:
+                logger.warning(
+                    "Log download exceeded %d bytes cap, skipping",
+                    _MAX_LOG_DOWNLOAD_BYTES,
+                )
+                return None
+            chunks.append(chunk)
+    return b"".join(chunks)
 
 
 class HarnessClient(PipelineProvider):
@@ -283,6 +195,8 @@ class HarnessClient(PipelineProvider):
     def __init__(self, profile: HarnessProfile) -> None:
         self._profile = profile
         self._client: httpx.AsyncClient | None = None
+        self._semaphore = asyncio.Semaphore(_MAX_CONCURRENT_REQUESTS)
+        self._cache = TTLCache(max_size=200)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -345,6 +259,8 @@ class HarnessClient(PipelineProvider):
             raise ReadOnlyViolationError(
                 f"HTTP {method_upper} is blocked — Hawkeye is read-only"
             )
+        if method_upper == "POST":
+            _ensure_post_allowed(path)
 
         client = await self._ensure_client()
         merged_params = {**self._scope_params(scope), **(params or {})}
@@ -352,12 +268,15 @@ class HarnessClient(PipelineProvider):
         last_exc: Exception | None = None
         for attempt in range(_MAX_RETRIES):
             try:
-                resp = await client.request(
-                    method_upper, path, params=merged_params, json=json_body
-                )
+                async with self._semaphore:
+                    resp = await client.request(
+                        method_upper, path, params=merged_params, json=json_body
+                    )
                 if resp.status_code in _RETRYABLE_STATUSES:
                     last_exc = HarnessAPIError(resp.status_code, resp.text[:200])
-                    wait = _BACKOFF_BASE * (2**attempt)
+                    if attempt + 1 >= _MAX_RETRIES:
+                        break
+                    wait = _retry_wait(attempt, resp.headers.get("Retry-After"))
                     logger.warning(
                         "Retryable %s on %s (attempt %d/%d), waiting %.1fs",
                         resp.status_code,
@@ -374,9 +293,10 @@ class HarnessClient(PipelineProvider):
                 return resp.json()
             except httpx.TimeoutException as exc:
                 last_exc = exc
-                wait = _BACKOFF_BASE * (2**attempt)
+                if attempt + 1 >= _MAX_RETRIES:
+                    break
                 logger.warning("Timeout on %s (attempt %d/%d)", path, attempt + 1, _MAX_RETRIES)
-                await asyncio.sleep(wait)
+                await asyncio.sleep(_retry_wait(attempt))
             except httpx.HTTPStatusError as exc:
                 raise HarnessAPIError(exc.response.status_code, exc.response.text[:200]) from exc
 
@@ -388,25 +308,74 @@ class HarnessClient(PipelineProvider):
             return resp["data"]
         return resp
 
+    async def _fetch_pages(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
+        scope: str = "project",
+        page_param: str = "page",
+        page_size: int = _PAGE_SIZE,
+        max_pages: int = _MAX_PAGES,
+    ) -> list[Any]:
+        """Follow paginated list responses, up to *max_pages* pages.
+
+        Handles both bare-list responses (v1 API) and enveloped
+        ``{"content": [...]}`` responses (NG APIs).  Stops early when a
+        page comes back short.
+        """
+        items: list[Any] = []
+        for page in range(max_pages):
+            merged = {**(params or {}), page_param: str(page)}
+            raw = await self._request(
+                method, path, params=merged, json_body=json_body, scope=scope
+            )
+            data = self._unwrap_legacy(raw)
+            if isinstance(data, dict):
+                batch = data.get("content", [])
+            elif isinstance(data, list):
+                batch = data
+            else:
+                break
+            if not isinstance(batch, list) or not batch:
+                break
+            items.extend(batch)
+            if len(batch) < page_size:
+                break
+        return items
+
     # ------------------------------------------------------------------
     # PipelineProvider implementation
     # ------------------------------------------------------------------
 
     async def get_execution(self, execution_id: str) -> PipelineExecution:
-        """Get full execution details including all stages and steps."""
+        """Get full execution details including all stages and steps.
+
+        Completed (terminal-status) executions are immutable and cached.
+        """
+        cache_key = f"exec/{execution_id}"
+        cached: PipelineExecution | None = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         raw = await self._request(
             "GET",
             f"/pipeline/api/pipelines/execution/v2/{execution_id}",
             params={"renderFullBottomGraph": "true"},
         )
         data = self._unwrap_legacy(raw)
-        return parse_execution_detail(
+        execution = parse_execution_detail(
             data,
             base_url=self._profile.base_url,
             account_id=self._profile.account_id,
             org=self._profile.org_identifier,
             project=self._profile.project_identifier,
         )
+        if execution.status in _TERMINAL_STATUSES:
+            self._cache.set(cache_key, execution, ttl=_EXEC_CACHE_TTL)
+        return execution
 
     async def get_execution_graph(self, execution_id: str) -> ExecutionGraph:
         """Get the execution graph with node hierarchy."""
@@ -488,8 +457,8 @@ class HarnessClient(PipelineProvider):
                 continue
 
             raw_node = _raw_node(raw_node_map, uuid)
-            stage_matched = _stage_matches(stage_id, raw_node, base_fqn=node.base_fqn)
-            score = _candidate_score(node, step_id=step_id, stage_matched=stage_matched, uuid=uuid)
+            stage_matched = stage_matches(stage_id, raw_node, base_fqn=node.base_fqn)
+            score = candidate_score(node, step_id=step_id, stage_matched=stage_matched, uuid=uuid)
             match = (score, uuid, node)
             if stage_matched:
                 constrained_matches.append(match)
@@ -527,7 +496,7 @@ class HarnessClient(PipelineProvider):
             )
 
         api_logs = None
-        api_log_key = _extract_log_key(target_node, subgraph_data)
+        api_log_key = extract_log_key(target_node, subgraph_data)
         if api_log_key:
             try:
                 api_logs = await self._download_logs_for_key(api_log_key)
@@ -556,14 +525,13 @@ class HarnessClient(PipelineProvider):
             return None
 
         client = await self._ensure_client()
+        blob_path = "/gateway/log-service/blob/download"
+        _ensure_post_allowed(blob_path)
         params = {"accountID": self._profile.account_id, "prefix": log_key}
 
         download_link = None
         for attempt in range(_LOG_DOWNLOAD_MAX_POLLS):
-            resp = await client.post(
-                "/gateway/log-service/blob/download",
-                params=params,
-            )
+            resp = await client.post(blob_path, params=params)
             if resp.status_code in _RETRYABLE_STATUSES:
                 await asyncio.sleep(_LOG_DOWNLOAD_POLL_SECONDS)
                 continue
@@ -583,9 +551,10 @@ class HarnessClient(PipelineProvider):
             logger.debug("Log Service did not produce a download link for key %s", log_key)
             return None
 
-        zip_resp = await client.get(download_link, follow_redirects=True)
-        zip_resp.raise_for_status()
-        return _extract_logs_from_zip(zip_resp.content)
+        zip_bytes = await _download_capped(download_link)
+        if zip_bytes is None:
+            return None
+        return extract_logs_from_zip(zip_bytes)
 
     async def get_step_subgraph(
         self, execution_id: str, node_execution_id: str
@@ -639,7 +608,12 @@ class HarnessClient(PipelineProvider):
         )
 
     async def get_pipeline_definition(self, pipeline_id: str, branch: str | None = None) -> dict:  # type: ignore[type-arg]
-        """Get pipeline YAML/definition (v1 API)."""
+        """Get pipeline YAML/definition (v1 API).  Cached briefly."""
+        cache_key = f"pipedef/{pipeline_id}/{branch or ''}"
+        cached: dict | None = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         params: dict[str, str] = {"accountIdentifier": self._profile.account_id}
         if branch:
             params["branch"] = branch
@@ -648,25 +622,33 @@ class HarnessClient(PipelineProvider):
             f"/v1/orgs/{self._profile.org_identifier}/projects/{self._profile.project_identifier}/pipelines/{pipeline_id}",
             params=params,
         )
-        return raw if isinstance(raw, dict) else {"pipeline_yaml": raw}
+        result = raw if isinstance(raw, dict) else {"pipeline_yaml": raw}
+        self._cache.set(cache_key, result, ttl=_PIPELINE_DEF_CACHE_TTL)
+        return result
 
     async def list_pipelines(
         self, search: str | None = None
     ) -> list[PipelineSummary]:
-        """List all pipelines in current project (v1 API)."""
+        """List all pipelines in current project (v1 API, paginated, cached)."""
+        cache_key = f"pipelines/{search or ''}"
+        cached: list[PipelineSummary] | None = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         params: dict[str, str] = {
             "accountIdentifier": self._profile.account_id,
-            "limit": "100",
+            "limit": str(_PAGE_SIZE),
         }
         if search:
             params["search_term"] = search
-        raw = await self._request(
+        items = await self._fetch_pages(
             "GET",
             f"/v1/orgs/{self._profile.org_identifier}/projects/{self._profile.project_identifier}/pipelines",
             params=params,
         )
-        items = raw if isinstance(raw, list) else raw.get("content", [])
-        return parse_pipeline_list(items)
+        result = parse_pipeline_list(items)
+        self._cache.set(cache_key, result, ttl=_LIST_CACHE_TTL)
+        return result
 
     async def get_input_sets(self, pipeline_id: str) -> list[InputSet]:
         """Get all input sets for a pipeline (v1 API)."""
@@ -694,24 +676,21 @@ class HarnessClient(PipelineProvider):
         """
         params: dict[str, str] = {
             "templateListType": "LastUpdated",
-            "page": "0",
-            "size": "100",
+            "size": str(_PAGE_SIZE),
         }
         if search:
             params["searchTerm"] = search
         body: dict[str, Any] = {"filterType": "Template"}
         if template_type:
             body["templateEntityTypes"] = [template_type]
-        raw = await self._request(
+        items = await self._fetch_pages(
             "POST",
             "/template/api/templates/list",
             params=params,
             json_body=body,
             scope=scope,
         )
-        data = self._unwrap_legacy(raw)
-        items = data.get("content", []) if isinstance(data, dict) else data
-        return parse_template_list(items if isinstance(items, list) else [])
+        return parse_template_list(items)
 
     async def get_template(
         self,
@@ -761,13 +740,14 @@ class HarnessClient(PipelineProvider):
         The v2 read API never returns secret values — only metadata such as
         type, secret manager, tags, and modification timestamps.
         """
-        params: dict[str, str] = {"pageSize": "100"}
+        params: dict[str, str] = {"pageSize": str(_PAGE_SIZE)}
         if search:
             params["searchTerm"] = search
-        raw = await self._request("GET", "/ng/api/v2/secrets", params=params, scope=scope)
-        data = self._unwrap_legacy(raw)
-        items = data.get("content", []) if isinstance(data, dict) else data
-        return parse_secret_list(items if isinstance(items, list) else [])
+        items = await self._fetch_pages(
+            "GET", "/ng/api/v2/secrets", params=params, scope=scope,
+            page_param="pageIndex",
+        )
+        return parse_secret_list(items)
 
     async def get_secret(self, secret_id: str, scope: str = "project") -> SecretInfo:
         """Get metadata for a single secret (v2 secrets API) — never the value.
@@ -786,13 +766,11 @@ class HarnessClient(PipelineProvider):
         self, search: str | None = None
     ) -> list[EnvironmentSummary]:
         """List environments in the current project (environmentsV2 API)."""
-        params: dict[str, str] = {"size": "100"}
+        params: dict[str, str] = {"size": str(_PAGE_SIZE)}
         if search:
             params["searchTerm"] = search
-        raw = await self._request("GET", "/ng/api/environmentsV2", params=params)
-        data = self._unwrap_legacy(raw)
-        items = data.get("content", []) if isinstance(data, dict) else data
-        return parse_environment_list(items if isinstance(items, list) else [])
+        items = await self._fetch_pages("GET", "/ng/api/environmentsV2", params=params)
+        return parse_environment_list(items)
 
     async def get_environment(self, environment_id: str) -> dict:  # type: ignore[type-arg]
         """Get environment detail including YAML (environmentsV2 API)."""
@@ -807,14 +785,12 @@ class HarnessClient(PipelineProvider):
         self, environment_id: str
     ) -> list[InfrastructureSummary]:
         """List infrastructure definitions for an environment."""
-        raw = await self._request(
+        items = await self._fetch_pages(
             "GET",
             "/ng/api/infrastructures",
-            params={"environmentIdentifier": environment_id, "size": "100"},
+            params={"environmentIdentifier": environment_id, "size": str(_PAGE_SIZE)},
         )
-        data = self._unwrap_legacy(raw)
-        items = data.get("content", []) if isinstance(data, dict) else data
-        return parse_infrastructure_list(items if isinstance(items, list) else [])
+        return parse_infrastructure_list(items)
 
     async def get_infrastructure(
         self, infrastructure_id: str, environment_id: str
@@ -833,13 +809,11 @@ class HarnessClient(PipelineProvider):
 
     async def list_services(self, search: str | None = None) -> list[ServiceSummary]:
         """List services in the current project (servicesV2 API)."""
-        params: dict[str, str] = {"size": "100"}
+        params: dict[str, str] = {"size": str(_PAGE_SIZE)}
         if search:
             params["searchTerm"] = search
-        raw = await self._request("GET", "/ng/api/servicesV2", params=params)
-        data = self._unwrap_legacy(raw)
-        items = data.get("content", []) if isinstance(data, dict) else data
-        return parse_service_list(items if isinstance(items, list) else [])
+        items = await self._fetch_pages("GET", "/ng/api/servicesV2", params=params)
+        return parse_service_list(items)
 
     async def get_service(self, service_id: str) -> dict:  # type: ignore[type-arg]
         """Get service detail including YAML (servicesV2 API)."""
@@ -873,115 +847,17 @@ class HarnessClient(PipelineProvider):
                 "/ng/api/delegate-group/v2",
             )
         data = self._unwrap_legacy(raw)
-        # Response is {"resource": [...]} containing delegateGroupDetails
-        resource = data if isinstance(data, list) else data.get("resource", [])
-        if isinstance(resource, dict):
-            # Sometimes wrapped as {"delegateGroupDetails": [...]}
-            resource = resource.get("delegateGroupDetails", [resource])
-        delegates = []
-        for item in resource:
-            if not isinstance(item, dict):
-                continue
-            # Extract tags — modern API returns a flat list of strings
-            raw_tags = item.get("tags", [])
-            if isinstance(raw_tags, list):
-                tags = [str(t) for t in raw_tags]
-            elif isinstance(raw_tags, dict):
-                # Legacy: groupImplicitSelectors as dict
-                tags = []
-                for key, values in raw_tags.items():
-                    if isinstance(values, list):
-                        tags.extend(str(v) for v in values)
-                    else:
-                        tags.append(f"{key}:{values}")
-            else:
-                tags = []
-
-            # Also check legacy groupImplicitSelectors if tags is empty
-            if not tags:
-                selectors = item.get("groupImplicitSelectors", {})
-                if isinstance(selectors, dict):
-                    for key, values in selectors.items():
-                        if isinstance(values, list):
-                            tags.extend(str(v) for v in values)
-                        else:
-                            tags.append(f"{key}:{values}")
-                elif isinstance(selectors, list):
-                    tags = [str(s) for s in selectors]
-
-            # Modern API uses "delegateReplicas", legacy uses "delegateInstanceDetails".
-            # Either key may be present with an explicit null value.
-            replicas = (
-                item.get("delegateReplicas")
-                or item.get("delegateInstanceDetails")
-                or []
-            )
-
-            # Status from first replica
-            if replicas:
-                first_status = replicas[0].get("status", "UNKNOWN")
-            else:
-                first_status = item.get("status", "UNKNOWN")
-
-            # Connected: modern uses "connected", legacy uses "activelyConnected"
-            actively_connected = bool(
-                item.get("connected", item.get("activelyConnected", False))
-            )
-
-            delegates.append(DelegateInfo(
-                identifier=str(item.get("delegateGroupIdentifier", item.get("identifier", item.get("name", "")))),
-                name=str(item.get("groupName", item.get("name", ""))),
-                status=str(first_status),
-                actively_connected=actively_connected,
-                last_heartbeat=item.get("lastHeartBeat"),
-                delegate_type=str(item.get("type", item.get("delegateType", ""))),
-                tags=tags,
-                instances_connected=len(replicas),
-            ))
-        return delegates
+        return parse_delegate_list(data)
 
     async def list_connectors(self, search: str | None = None) -> list[ConnectorInfo]:
         """List connectors with their last connectivity test status."""
-        params: dict[str, str] = {"pageSize": "100"}
+        params: dict[str, str] = {"pageSize": str(_PAGE_SIZE)}
         if search:
             params["searchTerm"] = search
-        raw = await self._request("GET", "/ng/api/connectors", params=params)
-        data = self._unwrap_legacy(raw)
-        content = data.get("content", []) if isinstance(data, dict) else data
-        connectors: list[ConnectorInfo] = []
-        for item in content:
-            if not isinstance(item, dict):
-                continue
-            connector = item.get("connector", item)
-            status_obj = item.get("status", {})
-            if not isinstance(status_obj, dict):
-                status_obj = {}
-            test_status = str(status_obj.get("status", "UNKNOWN"))
-            tested_at = status_obj.get("testedAt")
-            error_summary = str(status_obj.get("errorSummary", "") or "")
-            delegate_id = str(status_obj.get("delegateId", "") or "")
-
-            # Determine scope from identifier prefix or connector data
-            scope = "project"
-            identifier = str(connector.get("identifier", ""))
-            org_ref = connector.get("orgIdentifier")
-            proj_ref = connector.get("projectIdentifier")
-            if not org_ref and not proj_ref:
-                scope = "account"
-            elif org_ref and not proj_ref:
-                scope = "org"
-
-            connectors.append(ConnectorInfo(
-                identifier=identifier,
-                name=str(connector.get("name", identifier)),
-                connector_type=str(connector.get("type", "")),
-                status=test_status,
-                last_tested=tested_at,
-                scope=scope,
-                delegate_used=delegate_id,
-                error_summary=error_summary,
-            ))
-        return connectors
+        items = await self._fetch_pages(
+            "GET", "/ng/api/connectors", params=params, page_param="pageIndex"
+        )
+        return parse_connector_list(items)
 
     @staticmethod
     def _parse_connector_scope(identifier: str) -> tuple[str, str]:
@@ -1004,20 +880,10 @@ class HarnessClient(PipelineProvider):
         if parsed_scope != "project":
             scope = parsed_scope
 
-        params: dict[str, str] = {
-            "accountIdentifier": self._profile.account_id,
-        }
-        if scope in ("org", "project"):
-            params["orgIdentifier"] = self._profile.org_identifier
-        if scope == "project":
-            params["projectIdentifier"] = self._profile.project_identifier
-
-        client = await self._ensure_client()
-        resp = await client.post(
+        raw = await self._request(
+            "POST",
             f"/ng/api/connectors/testConnection/{bare_id}",
-            params=params,
+            scope=scope,
         )
-        resp.raise_for_status()
-        raw = resp.json()
         data = self._unwrap_legacy(raw)
         return data if isinstance(data, dict) else {"status": "UNKNOWN"}

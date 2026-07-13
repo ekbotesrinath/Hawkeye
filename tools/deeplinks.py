@@ -9,13 +9,13 @@ from __future__ import annotations
 from mcp.server.fastmcp import FastMCP
 
 from config.settings import get_active_profile
-from tools._helpers import run_tool
+from tools._helpers import READ_ONLY_ANNOTATIONS, run_tool
 
 
 def register_deeplink_tools(mcp: FastMCP) -> None:
     """Register deep-link tools on the MCP server."""
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def hawkeye_build_link(
         pipeline_id: str,
         execution_id: str | None = None,
@@ -46,7 +46,7 @@ def register_deeplink_tools(mcp: FastMCP) -> None:
             base = profile.base_url.rstrip("/")
             path_parts = [
                 f"{base}/ng/account/{profile.account_id}",
-                f"module/cd",
+                "module/cd",
                 f"orgs/{profile.org_identifier}",
                 f"projects/{profile.project_identifier}",
                 f"pipelines/{pipeline_id}",

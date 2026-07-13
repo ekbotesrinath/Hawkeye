@@ -26,7 +26,6 @@ from tools.investigate import (
     _format_comparison,
     _format_failure_pattern,
     _format_investigation,
-    _format_summary,
     _most_common,
     _timing_delta,
     _truncate_logs,
@@ -968,6 +967,7 @@ class TestInvestigateToolRegistration:
 
     def test_registration_does_not_raise(self) -> None:
         from mcp.server.fastmcp import FastMCP
+
         from tools.investigate import register_investigation_tools
 
         server = FastMCP("test")
@@ -977,6 +977,7 @@ class TestInvestigateToolRegistration:
     async def test_investigate_failure_missing_params(self) -> None:
         """Tool returns error when no execution_id or url provided."""
         from mcp.server.fastmcp import FastMCP
+
         from tools.investigate import register_investigation_tools
 
         server = FastMCP("test")
@@ -1018,13 +1019,14 @@ class TestInvestigateToolRegistration:
 
         with patch("tools.investigate.get_provider", return_value=mock_provider):
             from mcp.server.fastmcp import FastMCP
+
             from tools.investigate import register_investigation_tools
 
             server = FastMCP("test")
             register_investigation_tools(server)
 
             # Directly call inner logic
-            from tools.investigate import _format_investigation, _collect_failed_steps
+            from tools.investigate import _collect_failed_steps, _format_investigation
 
             failed_steps = _collect_failed_steps(execution)
             result = _format_investigation(

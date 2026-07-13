@@ -3,19 +3,27 @@
 ## Quick Reference
 - Python 3.12, `.venv`
 - `make test` — run full test suite
+- `make lint` — ruff + mypy over the whole repo (must pass)
+- `make audit` — pip-audit dependency scan
 - `make server` — start MCP server
 - `make connect` — configure Harness credentials
+- `make status` — show profiles + live connectivity check
 - All tools are read-only
-- Tests must always pass before committing
+- Tests AND lint must pass before committing (CI enforces both)
 
 ## Architecture
 ```
-tools/*.py → providers/base.py → providers/harness/*.py → Harness API
+tools/*.py → tools/_gather.py → providers/base.py → providers/harness/*.py → Harness API
 ```
 
 - `tools/` — MCP tool definitions (execution, pipeline, investigation, account)
+- `tools/_gather.py` — shared investigation orchestration (failed-step details,
+  CI infra enrichment, child pipeline following) — the ONLY home for that
+  logic; never re-implement it inside a tool
 - `core/` — models, sanitizer, audit logger, cache, fuzzy matching
-- `providers/` — abstract base + Harness implementation
+- `core/formatters.py` — single home for duration/icon/truncation helpers
+- `providers/` — abstract base (+ `ProviderError`) + Harness implementation
+- `providers/harness/graph_search.py` — step matching + console-log extraction
 - `config/` — multi-tenant profile management (stored in `~/.hawkeye/`)
 
 ## Tools (35 total)
@@ -80,19 +88,30 @@ tools/*.py → providers/base.py → providers/harness/*.py → Harness API
 - `ping` — health check
 
 ## Rules
-- Never write to pipeline provider APIs (read-only enforced at transport)
-- Never log or expose API tokens
+- Never write to pipeline provider APIs — read-only is enforced at transport:
+  PUT/DELETE/PATCH are blocked, and POST is restricted to an explicit
+  allowlist of read-semantics endpoints (`_ALLOWED_POST_PATHS` in
+  `providers/harness/client.py`). Adding a new POST endpoint means adding it
+  to that allowlist deliberately.
+- Never log or expose API tokens. The signed log-download link MUST be
+  fetched with the bare (headerless) client — never the authenticated one.
 - All tool outputs must be sanitized via `core/sanitizer.py`
 - All tool invocations must be audit logged via `core/audit.py`
 - Use `tools/_helpers.py:run_tool()` wrapper for every tool to ensure audit + sanitize
+- Every `@mcp.tool()` must pass `annotations=READ_ONLY_ANNOTATIONS`
+  (from `tools/_helpers.py`) — a test enforces this
+- Clamp numeric tool params with `tools/_helpers.py:clamp_limit()`
 - Fuzzy name resolution (`core/fuzzy.py`) resolves partial pipeline names
 - Profiles and tokens stored in `~/.hawkeye/` via keyring
+- Listings paginate (up to 5×100) and are cached per-client (60 s TTL);
+  completed executions are cached 10 min — see `providers/harness/client.py`
 
 ## Configuration
 
 ### Toolset Filtering (`HAWKEYE_TOOLSETS`)
 Comma-separated list of toolset names to register. Default (unset/empty): all.
 - Toolsets: `execution`, `investigation`, `pipeline`, `templates`, `account`, `deeplinks`, `terraform`, `delegates`, `connectors`, `secrets`, `environments`
+- Singular/plural spellings both accepted (e.g. `executions`, `secret`)
 - `account` + `ping` are always registered
 - Unknown names are warned and ignored
 - Example: `HAWKEYE_TOOLSETS=execution,investigation` — only load execution + investigation + account + ping

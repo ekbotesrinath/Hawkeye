@@ -10,7 +10,7 @@ from __future__ import annotations
 from mcp.server.fastmcp import FastMCP
 
 from core.models import TemplateSummary
-from tools._helpers import format_relative_time, get_provider, run_tool
+from tools._helpers import READ_ONLY_ANNOTATIONS, format_relative_time, get_provider, run_tool
 
 _VALID_SCOPES = ("project", "org", "account")
 
@@ -84,7 +84,7 @@ async def _resolve_template_id(template_id: str, scope: str) -> str:
 def register_template_tools(mcp: FastMCP) -> None:
     """Register all template tools on the MCP server."""
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def hawkeye_list_templates(
         search: str | None = None,
         template_type: str | None = None,
@@ -134,7 +134,7 @@ def register_template_tools(mcp: FastMCP) -> None:
 
         return await run_tool("hawkeye_list_templates", params, _run())
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def hawkeye_get_template(
         template_id: str,
         version_label: str | None = None,

@@ -18,8 +18,12 @@ from providers.harness.client import (
     HarnessAPIError,
     HarnessClient,
     ReadOnlyViolationError,
-    _extract_log_key,
-    _extract_logs_from_zip,
+)
+from providers.harness.graph_search import (
+    extract_log_key as _extract_log_key,
+)
+from providers.harness.graph_search import (
+    extract_logs_from_zip as _extract_logs_from_zip,
 )
 
 
@@ -122,12 +126,40 @@ class TestReadOnlyEnforcement:
             assert result == {"ok": True}
 
     @pytest.mark.asyncio
-    async def test_post_allowed(self, client: HarnessClient) -> None:
-        with respx.mock:
-            respx.post("https://app.harness.io/test").mock(
-                return_value=httpx.Response(200, json={"ok": True})
+    async def test_post_to_unlisted_path_blocked(self, client: HarnessClient) -> None:
+        """POST is only allowed to explicitly allowlisted read-only endpoints."""
+        with pytest.raises(ReadOnlyViolationError):
+            await client._request("POST", "/test")
+
+    @pytest.mark.asyncio
+    async def test_post_to_trigger_endpoint_blocked(self, client: HarnessClient) -> None:
+        """State-changing Harness POST endpoints must be rejected."""
+        with pytest.raises(ReadOnlyViolationError):
+            await client._request(
+                "POST", "/pipeline/api/pipeline/execute/pipe1"
             )
-            result = await client._request("POST", "/test")
+
+    @pytest.mark.asyncio
+    async def test_post_to_allowlisted_path_allowed(self, client: HarnessClient) -> None:
+        with respx.mock:
+            respx.post(
+                "https://app.harness.io/pipeline/api/pipelines/execution/summary"
+            ).mock(return_value=httpx.Response(200, json={"ok": True}))
+            result = await client._request(
+                "POST", "/pipeline/api/pipelines/execution/summary"
+            )
+            assert result == {"ok": True}
+
+    @pytest.mark.asyncio
+    async def test_post_allowlist_prefix_match(self, client: HarnessClient) -> None:
+        """testConnection/{id} is allowed via prefix matching."""
+        with respx.mock:
+            respx.post(
+                "https://app.harness.io/ng/api/connectors/testConnection/my_conn"
+            ).mock(return_value=httpx.Response(200, json={"ok": True}))
+            result = await client._request(
+                "POST", "/ng/api/connectors/testConnection/my_conn"
+            )
             assert result == {"ok": True}
 
     def test_blocked_methods_set(self) -> None:
@@ -284,6 +316,47 @@ class TestLogDownloadHelpers:
         assert result is not None
         assert "first line" in result
         assert "nested line" in result
+
+    def test_extract_logs_from_zip_caps_decompressed_size(self) -> None:
+        """Oversized archive members are skipped with a truncation note."""
+        import providers.harness.graph_search as graph_search_mod
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("logs/small.ndjson", json.dumps({"message": "kept"}))
+            archive.writestr("logs/z_huge.ndjson", "x" * 4096)
+        with patch.object(graph_search_mod, "_MAX_LOG_DECOMPRESSED_BYTES", 100):
+            result = _extract_logs_from_zip(buffer.getvalue())
+        assert result is not None
+        assert "kept" in result
+        assert "truncated" in result
+
+    @pytest.mark.asyncio
+    async def test_download_capped_rejects_oversized_body(self) -> None:
+        import providers.harness.client as client_mod
+        from providers.harness.client import _download_capped
+
+        with respx.mock:
+            respx.get("https://storage.example.com/logs.zip").mock(
+                return_value=httpx.Response(200, content=b"y" * 2048)
+            )
+            with patch.object(client_mod, "_MAX_LOG_DOWNLOAD_BYTES", 1024):
+                result = await _download_capped("https://storage.example.com/logs.zip")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_download_link_fetched_without_api_key(self) -> None:
+        """The signed blob link must NOT receive the Harness API token (S1)."""
+        from providers.harness.client import _download_capped
+
+        with respx.mock:
+            route = respx.get("https://storage.example.com/logs.zip").mock(
+                return_value=httpx.Response(200, content=b"data")
+            )
+            result = await _download_capped("https://storage.example.com/logs.zip")
+        assert result == b"data"
+        request = route.calls[0].request
+        assert "x-api-key" not in request.headers
 
 
 # ------------------------------------------------------------------
@@ -888,3 +961,90 @@ class TestClientLifecycle:
     async def test_close(self, client: HarnessClient) -> None:
         # Closing without opening should not fail
         await client.close()
+
+
+class TestCaching:
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_terminal_execution_cached(
+        self, client: HarnessClient, sample_execution_response: dict
+    ) -> None:
+        route = respx.get(
+            "https://app.harness.io/pipeline/api/pipelines/execution/v2/exec_success_001"
+        ).mock(return_value=httpx.Response(200, json=sample_execution_response))
+
+        first = await client.get_execution("exec_success_001")
+        second = await client.get_execution("exec_success_001")
+        assert first.plan_execution_id == second.plan_execution_id
+        assert route.call_count == 1  # second call served from cache
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_running_execution_not_cached(self, client: HarnessClient) -> None:
+        body = {
+            "status": "SUCCESS",
+            "data": {
+                "pipelineExecutionSummary": {
+                    "planExecutionId": "exec_running",
+                    "pipelineIdentifier": "pipe1",
+                    "name": "P",
+                    "status": "Running",
+                    "runSequence": 3,
+                    "layoutNodeMap": {},
+                }
+            },
+        }
+        route = respx.get(
+            "https://app.harness.io/pipeline/api/pipelines/execution/v2/exec_running"
+        ).mock(return_value=httpx.Response(200, json=body))
+
+        await client.get_execution("exec_running")
+        await client.get_execution("exec_running")
+        assert route.call_count == 2  # running executions are always re-fetched
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_list_pipelines_cached(self, client: HarnessClient) -> None:
+        route = respx.get(
+            "https://app.harness.io/v1/orgs/default/projects/hawkeye_proj/pipelines"
+        ).mock(return_value=httpx.Response(200, json=[]))
+
+        await client.list_pipelines()
+        await client.list_pipelines()
+        assert route.call_count == 1
+
+
+class TestPagination:
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_list_pipelines_follows_pages(self, client: HarnessClient) -> None:
+        full_page = [
+            {"identifier": f"pipe_{i}", "name": f"Pipeline {i}"} for i in range(100)
+        ]
+        short_page = [{"identifier": "pipe_last", "name": "Last"}]
+        route = respx.get(
+            "https://app.harness.io/v1/orgs/default/projects/hawkeye_proj/pipelines"
+        ).mock(
+            side_effect=[
+                httpx.Response(200, json=full_page),
+                httpx.Response(200, json=short_page),
+            ]
+        )
+
+        results = await client.list_pipelines()
+        assert len(results) == 101
+        assert route.call_count == 2
+        pages = [dict(call.request.url.params)["page"] for call in route.calls]
+        assert pages == ["0", "1"]
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_list_secrets_uses_page_index(self, client: HarnessClient) -> None:
+        route = respx.get("https://app.harness.io/ng/api/v2/secrets").mock(
+            return_value=httpx.Response(
+                200, json={"status": "SUCCESS", "data": {"content": []}}
+            )
+        )
+        await client.list_secrets()
+        params = dict(route.calls[0].request.url.params)
+        assert params["pageIndex"] == "0"

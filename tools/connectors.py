@@ -11,7 +11,7 @@ import logging
 
 from mcp.server.fastmcp import FastMCP
 
-from tools._helpers import format_relative_time, get_provider, run_tool
+from tools._helpers import READ_ONLY_ANNOTATIONS, format_relative_time, get_provider, run_tool
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ def _status_icon(status: str) -> str:
 def register_connector_tools(mcp: FastMCP) -> None:
     """Register all connector tools on the MCP server."""
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def hawkeye_list_connectors(search: str = "") -> str:
         """List connectors with their connectivity status.
 
@@ -68,7 +68,7 @@ def register_connector_tools(mcp: FastMCP) -> None:
 
         return await run_tool("hawkeye_list_connectors", params, _run())
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def hawkeye_check_connector(identifier: str) -> str:
         """Check connectivity of a specific connector.
 

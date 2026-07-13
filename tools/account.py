@@ -11,13 +11,13 @@ from mcp.server.fastmcp import FastMCP
 
 from config.settings import get_profile, list_profiles, set_active_profile
 from providers.harness.client import HarnessClient
-from tools._helpers import reset_provider, run_tool
+from tools._helpers import READ_ONLY_ANNOTATIONS, reset_provider, run_tool
 
 
 def register_account_tools(mcp: FastMCP) -> None:
     """Register all account tools on the MCP server."""
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def hawkeye_connect_account(
         profile_name: str,
     ) -> str:
@@ -66,7 +66,7 @@ def register_account_tools(mcp: FastMCP) -> None:
 
         return await run_tool("hawkeye_connect_account", params, _run())
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def hawkeye_list_profiles() -> str:
         """List all configured Hawkeye profiles with active indicator.
 

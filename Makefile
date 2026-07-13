@@ -7,7 +7,7 @@ VENV_PYTEST := $(VENV)\Scripts\pytest
 VENV_RUFF := $(VENV)\Scripts\ruff
 VENV_MYPY := $(VENV)\Scripts\mypy
 
-.PHONY: help setup test test-cov lint server connect status clean
+.PHONY: help setup test test-cov lint audit server connect status clean
 
 help: ## Print available commands
 	@echo.
@@ -37,9 +37,12 @@ test: ## Run full test suite
 test-cov: ## Run tests with coverage, fail under 80%
 	$(VENV_PYTEST) tests/ --cov=. --cov-report=term-missing --cov-fail-under=80
 
-lint: ## Run ruff check + mypy
+lint: ## Run ruff check + mypy (full repo)
 	$(VENV_RUFF) check .
-	$(VENV_MYPY) core/ providers/ config/ --ignore-missing-imports
+	$(VENV_MYPY) core/ providers/ config/ tools/ main.py --ignore-missing-imports
+
+audit: ## Audit dependencies for known vulnerabilities
+	$(VENV)\Scripts\pip-audit
 
 server: ## Start MCP server
 	$(VENV_PYTHON) main.py

@@ -12,6 +12,7 @@ from mcp.server.fastmcp import FastMCP
 
 from core.models import InputSet, PipelineSummary
 from tools._helpers import (
+    READ_ONLY_ANNOTATIONS,
     format_relative_time,
     get_provider,
     resolve_pipeline_id,
@@ -23,7 +24,7 @@ from tools._helpers import (
 def register_pipeline_tools(mcp: FastMCP) -> None:
     """Register all pipeline tools on the MCP server."""
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def hawkeye_get_pipeline_definition(
         pipeline_id: str,
         branch: str | None = None,
@@ -58,7 +59,7 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
 
         return await run_tool("hawkeye_get_pipeline_definition", params, _run())
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def hawkeye_list_pipelines(
         search: str | None = None,
         module: str | None = None,
@@ -92,7 +93,7 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
 
         return await run_tool("hawkeye_list_pipelines", params, _run())
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def hawkeye_get_input_sets(
         pipeline_id: str,
     ) -> str:

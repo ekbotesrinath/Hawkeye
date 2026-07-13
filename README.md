@@ -145,32 +145,42 @@ hawkeye/
 │   └── setup.py            # Interactive first-time setup wizard
 ├── config/
 │   ├── __init__.py
-│   └── settings.py         # Multi-tenant profile management
+│   ├── settings.py         # Multi-tenant profile management
+│   └── status.py           # `make status` — profiles + connectivity check
 ├── core/
-│   ├── models.py           # Pydantic data models
-│   ├── sanitizer.py        # Secret masking
+│   ├── models.py           # Pydantic data models + shared status sets
+│   ├── sanitizer.py        # Secret masking + injection scrubbing
 │   ├── audit.py            # Tool invocation logging
-│   ├── cache.py            # Response caching
+│   ├── cache.py            # TTL response cache (wired into the client)
+│   ├── formatters.py       # Durations, icons, tables, log truncation
 │   └── fuzzy.py            # Fuzzy name resolution
 ├── providers/
-│   ├── base.py             # Abstract provider interface
+│   ├── base.py             # Abstract provider interface + ProviderError
 │   └── harness/
-│       ├── client.py       # Harness API client
+│       ├── client.py       # Harness API client (retry, cache, pagination)
 │       ├── parser.py       # API response parser
+│       ├── graph_search.py # Step matching + console-log extraction
 │       └── url_patterns.py # Harness URL parser
 ├── tools/
-│   ├── _helpers.py         # Shared tool utilities
-│   ├── executions.py       # 5 execution tools
+│   ├── _helpers.py         # Shared tool utilities (audit/sanitize wrapper)
+│   ├── _gather.py          # Shared investigation orchestration
+│   ├── executions.py       # 8 execution tools
 │   ├── pipelines.py        # 3 pipeline tools
-│   ├── investigate.py      # 3 investigation tools
+│   ├── investigate.py      # 4 investigation tools
+│   ├── templates.py        # 2 template tools
+│   ├── secrets.py          # 2 secret metadata tools
+│   ├── environments.py     # 6 environment/service tools
 │   ├── delegates.py        # 2 delegate tools
 │   ├── connectors.py       # 2 connector tools
+│   ├── deeplinks.py        # 1 deep-link builder
+│   ├── terraform.py        # 2 Terraform report tools
 │   └── account.py          # 2 account tools
 ├── tests/
 │   ├── conftest.py         # Shared fixtures
 │   ├── fixtures/           # JSON API response fixtures
-│   └── test_*.py           # ~295 tests
+│   └── test_*.py           # 800+ tests
 └── .github/
+    ├── workflows/ci.yml    # Lint + typecheck + tests + pip-audit
     ├── copilot-instructions.md
     └── agents/
         ├── hawkeye-lead.agent.md
@@ -179,6 +189,26 @@ hawkeye/
         ├── hawkeye-patterns.agent.md
         └── hawkeye-artifacts.agent.md
 ```
+
+## Security Model
+
+- **Read-only at transport** — PUT/DELETE/PATCH are blocked outright, and
+  POST is restricted to an explicit allowlist of read-semantics endpoints
+  (list/summary/test queries). A future code path cannot accidentally
+  trigger, approve, or abort a pipeline.
+- **Tokens stay in the OS keyring** — never in config files or logs. Signed
+  log-download links are fetched with a bare HTTP client so the Harness API
+  key is never sent to blob storage hosts.
+- **Output sanitization** — every tool response is scrubbed for prompt
+  injection (replaced with a visible marker) and masked for secrets
+  (GitHub/AWS/Slack tokens, JWTs, PEM keys, connection strings, and
+  high-entropy strings — while git SHAs, image digests, and URLs pass
+  through untouched).
+- **Bounded resource use** — log downloads capped at 50 MB, decompression
+  at 20 MB, at most 8 concurrent API requests, retry with jitter honoring
+  `Retry-After`, and clamped list limits.
+- **MCP annotations** — every tool advertises `readOnlyHint=true` so MCP
+  clients can display and authorize accordingly (enforced by a test).
 
 ## Development
 

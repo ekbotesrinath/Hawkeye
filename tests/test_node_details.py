@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-import pytest
-
 from providers.harness.parser import (
     _EXPORT_RE,
     _SECRET_KEY_RE,
+    _extract_config,
+    _extract_script,
+    _format_duration_from_ts,
     _mask_secret_value,
     _mask_secrets_in_dict,
     _mask_secrets_in_script,
-    _extract_script,
-    _extract_config,
-    _format_duration_from_ts,
     _status_icon_str,
     extract_node_details,
 )

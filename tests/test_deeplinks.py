@@ -24,17 +24,21 @@ def _make_profile() -> HarnessProfile:
 @pytest.fixture()
 def _patch_profile():
     """Patch get_active_profile to return a test profile."""
-    with patch("tools.deeplinks.get_active_profile", return_value=_make_profile()):
-        with patch("tools._helpers.sanitize", side_effect=lambda x: x):
-            yield
+    with (
+        patch("tools.deeplinks.get_active_profile", return_value=_make_profile()),
+        patch("tools._helpers.sanitize", side_effect=lambda x: x),
+    ):
+        yield
 
 
 @pytest.fixture()
 def _patch_no_profile():
     """Patch get_active_profile to return None."""
-    with patch("tools.deeplinks.get_active_profile", return_value=None):
-        with patch("tools._helpers.sanitize", side_effect=lambda x: x):
-            yield
+    with (
+        patch("tools.deeplinks.get_active_profile", return_value=None),
+        patch("tools._helpers.sanitize", side_effect=lambda x: x),
+    ):
+        yield
 
 
 class TestBuildLink:

@@ -95,8 +95,9 @@ class TestListDelegates:
         provider = _mock_provider(delegates)
 
         with patch("tools.delegates.get_provider", return_value=provider):
-            from tools.delegates import register_delegate_tools
             from mcp.server.fastmcp import FastMCP
+
+            from tools.delegates import register_delegate_tools
 
             mcp = FastMCP("test")
             register_delegate_tools(mcp)
@@ -122,8 +123,9 @@ class TestListDelegates:
         provider = _mock_provider([])
 
         with patch("tools.delegates.get_provider", return_value=provider):
-            from tools.delegates import register_delegate_tools
             from mcp.server.fastmcp import FastMCP
+
+            from tools.delegates import register_delegate_tools
 
             mcp = FastMCP("test")
             register_delegate_tools(mcp)
@@ -148,8 +150,9 @@ class TestCheckDelegate:
         provider = _mock_provider(delegates)
 
         with patch("tools.delegates.get_provider", return_value=provider):
-            from tools.delegates import register_delegate_tools
             from mcp.server.fastmcp import FastMCP
+
+            from tools.delegates import register_delegate_tools
 
             mcp = FastMCP("test")
             register_delegate_tools(mcp)
@@ -174,8 +177,9 @@ class TestCheckDelegate:
         provider = _mock_provider(delegates)
 
         with patch("tools.delegates.get_provider", return_value=provider):
-            from tools.delegates import register_delegate_tools
             from mcp.server.fastmcp import FastMCP
+
+            from tools.delegates import register_delegate_tools
 
             mcp = FastMCP("test")
             register_delegate_tools(mcp)
@@ -195,8 +199,9 @@ class TestCheckDelegate:
         provider = _mock_provider(delegates)
 
         with patch("tools.delegates.get_provider", return_value=provider):
-            from tools.delegates import register_delegate_tools
             from mcp.server.fastmcp import FastMCP
+
+            from tools.delegates import register_delegate_tools
 
             mcp = FastMCP("test")
             register_delegate_tools(mcp)
@@ -221,8 +226,9 @@ class TestCheckDelegate:
         provider = _mock_provider(delegates)
 
         with patch("tools.delegates.get_provider", return_value=provider):
-            from tools.delegates import register_delegate_tools
             from mcp.server.fastmcp import FastMCP
+
+            from tools.delegates import register_delegate_tools
 
             mcp = FastMCP("test")
             register_delegate_tools(mcp)
@@ -237,8 +243,9 @@ class TestCheckDelegate:
         provider = _mock_provider([])
 
         with patch("tools.delegates.get_provider", return_value=provider):
-            from tools.delegates import register_delegate_tools
             from mcp.server.fastmcp import FastMCP
+
+            from tools.delegates import register_delegate_tools
 
             mcp = FastMCP("test")
             register_delegate_tools(mcp)

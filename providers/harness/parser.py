@@ -9,7 +9,11 @@ import logging
 import re
 from typing import Any
 
+from core.formatters import format_status_icon
+from core.formatters import truncate_to_tail as truncate_to_tail  # noqa: PLC0414 — re-export
 from core.models import (
+    ConnectorInfo,
+    DelegateInfo,
     EnvironmentSummary,
     ExecutionGraph,
     ExecutionStatus,
@@ -509,6 +513,130 @@ def parse_service_list(raw: list[dict[str, Any]]) -> list[ServiceSummary]:
 
 
 # ------------------------------------------------------------------
+# Delegates and connectors
+# ------------------------------------------------------------------
+
+
+def _parse_delegate_tags(item: dict[str, Any]) -> list[str]:
+    """Extract selector tags — modern flat list or legacy selector dict."""
+    raw_tags = item.get("tags", [])
+    if isinstance(raw_tags, list):
+        tags = [str(t) for t in raw_tags]
+    elif isinstance(raw_tags, dict):
+        tags = []
+        for key, values in raw_tags.items():
+            if isinstance(values, list):
+                tags.extend(str(v) for v in values)
+            else:
+                tags.append(f"{key}:{values}")
+    else:
+        tags = []
+
+    if not tags:
+        selectors = item.get("groupImplicitSelectors", {})
+        if isinstance(selectors, dict):
+            for key, values in selectors.items():
+                if isinstance(values, list):
+                    tags.extend(str(v) for v in values)
+                else:
+                    tags.append(f"{key}:{values}")
+        elif isinstance(selectors, list):
+            tags = [str(s) for s in selectors]
+    return tags
+
+
+def parse_delegate_list(raw: Any) -> list[DelegateInfo]:
+    """Parse the delegate-group listing into ``DelegateInfo`` objects.
+
+    Accepts either the modern ``{"resource": [...]}`` shape or a bare list;
+    handles legacy field names throughout.
+    """
+    resource = raw if isinstance(raw, list) else raw.get("resource", [])
+    if isinstance(resource, dict):
+        # Sometimes wrapped as {"delegateGroupDetails": [...]}
+        resource = resource.get("delegateGroupDetails", [resource])
+
+    delegates: list[DelegateInfo] = []
+    for item in resource:
+        if not isinstance(item, dict):
+            continue
+
+        tags = _parse_delegate_tags(item)
+
+        # Modern API uses "delegateReplicas", legacy uses
+        # "delegateInstanceDetails".  Either key may be explicitly null.
+        replicas = (
+            item.get("delegateReplicas")
+            or item.get("delegateInstanceDetails")
+            or []
+        )
+        if replicas:
+            first_status = replicas[0].get("status", "UNKNOWN")
+        else:
+            first_status = item.get("status", "UNKNOWN")
+
+        actively_connected = bool(
+            item.get("connected", item.get("activelyConnected", False))
+        )
+
+        delegates.append(DelegateInfo(
+            identifier=str(
+                item.get(
+                    "delegateGroupIdentifier",
+                    item.get("identifier", item.get("name", "")),
+                )
+            ),
+            name=str(item.get("groupName", item.get("name", ""))),
+            status=str(first_status),
+            actively_connected=actively_connected,
+            last_heartbeat=item.get("lastHeartBeat"),
+            delegate_type=str(item.get("type", item.get("delegateType", ""))),
+            tags=tags,
+            instances_connected=len(replicas),
+        ))
+    return delegates
+
+
+def parse_connector_list(raw: Any) -> list[ConnectorInfo]:
+    """Parse the connectors listing into ``ConnectorInfo`` objects."""
+    content = raw.get("content", []) if isinstance(raw, dict) else raw
+    connectors: list[ConnectorInfo] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        connector = item.get("connector", item)
+        status_obj = item.get("status", {})
+        if not isinstance(status_obj, dict):
+            status_obj = {}
+        test_status = str(status_obj.get("status", "UNKNOWN"))
+        tested_at = status_obj.get("testedAt")
+        error_summary = str(status_obj.get("errorSummary", "") or "")
+        delegate_id = str(status_obj.get("delegateId", "") or "")
+
+        # Determine scope from which identifiers are present
+        scope = "project"
+        identifier = str(connector.get("identifier", ""))
+        org_ref = connector.get("orgIdentifier")
+        proj_ref = connector.get("projectIdentifier")
+        if not org_ref and not proj_ref:
+            scope = "account"
+        elif org_ref and not proj_ref:
+            scope = "org"
+
+        connectors.append(ConnectorInfo(
+            identifier=identifier,
+            name=str(connector.get("name", identifier)),
+            connector_type=str(connector.get("type", "")),
+            status=test_status,
+            last_tested=tested_at,
+            scope=scope,
+            delegate_used=delegate_id,
+            error_summary=error_summary,
+        ))
+    return connectors
+
+
+# ------------------------------------------------------------------
 # Node detail extraction (replaces log blob download)
 # ------------------------------------------------------------------
 
@@ -520,6 +648,15 @@ _SECRET_KEY_RE = re.compile(
 
 # Pattern for export VAR=VALUE in scripts
 _EXPORT_RE = re.compile(r"(export\s+)(\w+)(=)(.*)", re.IGNORECASE)
+
+# CD K8s deployment step types (lowercased) that get failure analysis
+_K8S_DEPLOY_STEP_TYPES = (
+    "k8srollingdeploy",
+    "k8scanarydeploy",
+    "k8sbluegreendeploystep",
+    "k8sapply",
+    "k8srolling",
+)
 
 
 def _mask_secret_value(value: str) -> str:
@@ -565,42 +702,22 @@ def _safe_get(data: dict[str, Any] | None, *keys: str) -> Any:
 
 
 def _format_duration_from_ts(start_ts: Any, end_ts: Any) -> str:
-    """Format duration from timestamps."""
+    """Format duration from possibly-string timestamps (raw API data)."""
+    from core.formatters import format_duration
+
     if start_ts is None:
         return "—"
     try:
         start = int(start_ts)
-        end = int(end_ts) if end_ts is not None else int(__import__("time").time() * 1000)
-        elapsed_ms = end - start
-        if elapsed_ms < 0:
-            return "—"
-        total_seconds = elapsed_ms // 1000
-        hours = total_seconds // 3600
-        minutes = (total_seconds % 3600) // 60
-        seconds = total_seconds % 60
-        if hours > 0:
-            return f"{hours}h {minutes}m {seconds}s"
-        if minutes > 0:
-            return f"{minutes}m {seconds}s"
-        return f"{seconds}s"
+        end = int(end_ts) if end_ts is not None else None
     except (TypeError, ValueError):
         return "—"
+    return format_duration(start, end)
 
 
 def _status_icon_str(status: str) -> str:
-    """Get status icon from status string."""
-    status_lower = status.lower() if status else ""
-    if status_lower in ("success",):
-        return "✅"
-    if status_lower in ("failed", "errored"):
-        return "❌"
-    if status_lower in ("expired",):
-        return "⏰"
-    if status_lower in ("running",):
-        return "🔄"
-    if status_lower in ("skipped", "notstarted"):
-        return "⏭️"
-    return "❓"
+    """Get status icon from a raw status string."""
+    return format_status_icon(ExecutionStatus.from_str(status or "Unknown"))
 
 
 def _extract_script(step_params: dict[str, Any] | None, step_type: str) -> str | None:
@@ -739,7 +856,11 @@ def extract_node_details(
         sg_failure = subgraph_data.get("failureInfo")
         if sg_failure and isinstance(sg_failure, dict):
             sg_msgs = sg_failure.get("responseMessages", [])
-            orig_msgs = failure_info.get("responseMessages", []) if isinstance(failure_info, dict) else []
+            orig_msgs = (
+                failure_info.get("responseMessages", [])
+                if isinstance(failure_info, dict)
+                else []
+            )
             if len(sg_msgs) > len(orig_msgs):
                 failure_info = sg_failure
 
@@ -757,20 +878,20 @@ def extract_node_details(
             if resp_msgs:
                 lines.append("  Response Details:")
                 for rm in resp_msgs:
-                    if isinstance(rm, dict):
-                        rm_text = rm.get("message", str(rm))
-                    else:
-                        rm_text = str(rm)
+                    rm_text = rm.get("message", str(rm)) if isinstance(rm, dict) else str(rm)
                     lines.append(f'    "{rm_text}"')
 
     # Output variables
     outcomes = node_data.get("outcomes")
     if subgraph_data:
         sg_outcomes = subgraph_data.get("outcomes")
-        if sg_outcomes and isinstance(sg_outcomes, dict):
-            # Prefer subgraph if it has richer outcome data
-            if not outcomes or (isinstance(sg_outcomes, dict) and len(str(sg_outcomes)) > len(str(outcomes))):
-                outcomes = sg_outcomes
+        # Prefer subgraph if it has richer outcome data
+        if (
+            sg_outcomes
+            and isinstance(sg_outcomes, dict)
+            and (not outcomes or len(str(sg_outcomes)) > len(str(outcomes)))
+        ):
+            outcomes = sg_outcomes
 
     if outcomes and isinstance(outcomes, dict):
         output_vars = _safe_get(outcomes, "output", "outputVariables")
@@ -832,8 +953,9 @@ def extract_node_details(
             )
 
     # CD K8s deployment step analysis
-    _K8S_DEPLOY_TYPES = ("k8srollingdeploy", "k8scanarydeploy", "k8sbluegreendeploystep", "k8sapply", "k8srolling")
-    if step_type_lower in _K8S_DEPLOY_TYPES and status_lower in ("failed", "errored", "expired"):
+    if step_type_lower in _K8S_DEPLOY_STEP_TYPES and status_lower in (
+        "failed", "errored", "expired",
+    ):
         lines.append("")
         lines.append("⚠️ CD Infrastructure Issue — K8s Deployment Failed")
 
@@ -856,7 +978,9 @@ def extract_node_details(
             for info_key in ("k8sTaskDetails", "k8sTaskInfo", "taskDetails"):
                 k8s_info = step_details_data.get(info_key, {})
                 if k8s_info and isinstance(k8s_info, dict):
-                    for events_key in ("k8sClusterEventLogs", "clusterEvents", "events", "podEvents"):
+                    for events_key in (
+                        "k8sClusterEventLogs", "clusterEvents", "events", "podEvents",
+                    ):
                         event_logs = k8s_info.get(events_key)
                         if event_logs:
                             lines.append("K8s Cluster Events:")
@@ -873,8 +997,13 @@ def extract_node_details(
                 for rm in resp_msgs
             )
             if "progress deadline" in all_msgs:
-                lines.append("Diagnosis: Deployment exceeded progress deadline — pods failed to reach ready state")
-                lines.append("Check: readiness/liveness probes, image pull, node resources, pod events")
+                lines.append(
+                    "Diagnosis: Deployment exceeded progress deadline "
+                    "— pods failed to reach ready state"
+                )
+                lines.append(
+                    "Check: readiness/liveness probes, image pull, node resources, pod events"
+                )
             elif "insufficient" in all_msgs or "unschedulable" in all_msgs:
                 lines.append("Diagnosis: K8s scheduling failure — insufficient cluster resources")
                 lines.append("Check: node CPU/memory, autoscaler status, node affinity/taints")
@@ -918,7 +1047,7 @@ def extract_child_execution_id(node_data: dict[str, Any]) -> str | None:
 
     # 1. outcomes.output.pipelineExecutionId (direct ID)
     child_id = _safe_get(node_data, "outcomes", "output", "pipelineExecutionId")
-    if child_id and isinstance(child_id, str):
+    if isinstance(child_id, str) and child_id:
         return child_id
 
     # 2. outcomes.output.executionUrl → parse execution ID from URL
@@ -938,7 +1067,7 @@ def extract_child_execution_id(node_data: dict[str, Any]) -> str | None:
             child_data = er.get("child", {})
             if isinstance(child_data, dict):
                 cid = child_data.get("childExecutionId")
-                if cid and isinstance(cid, str):
+                if isinstance(cid, str) and cid:
                     return cid
             # async callback data may contain child ID
             async_data = er.get("async", {})
@@ -953,7 +1082,7 @@ def extract_child_execution_id(node_data: dict[str, Any]) -> str | None:
     child_id_from_params = _safe_get(
         node_data, "stepParameters", "spec", "pipelineExecutionId"
     )
-    if child_id_from_params and isinstance(child_id_from_params, str):
+    if isinstance(child_id_from_params, str) and child_id_from_params:
         return child_id_from_params
 
     return None
@@ -1054,21 +1183,24 @@ def build_execution_url(
 
 
 # ------------------------------------------------------------------
-# Log truncation
+# Scope prefixes
 # ------------------------------------------------------------------
 
 
-def truncate_to_tail(raw_logs: str, max_lines: int = 100) -> str:
-    """Return the last *max_lines* lines from raw log text.
+def split_scope_prefix(identifier: str) -> tuple[str, str]:
+    """Split a scope prefix from an entity identifier.
 
-    If the log has fewer than *max_lines*, return it all.
-    If truncated, prepend a note showing how many lines were omitted.
+    Returns (scope, bare_identifier).
+    'account.MyTemplate' -> ('account', 'MyTemplate')
+    'org.MyTemplate'     -> ('org', 'MyTemplate')
+    'MyTemplate'         -> ('project', 'MyTemplate')
     """
-    if not raw_logs:
-        return raw_logs
-    lines = raw_logs.splitlines()
-    if len(lines) <= max_lines:
-        return raw_logs
-    truncated = lines[-max_lines:]
-    header = f"... ({len(lines) - max_lines} lines above omitted, showing last {max_lines})\n"
-    return header + "\n".join(truncated)
+    if identifier.startswith("account."):
+        return "account", identifier[len("account."):]
+    if identifier.startswith("org."):
+        return "org", identifier[len("org."):]
+    return "project", identifier
+
+
+# NOTE: truncate_to_tail is imported from core.formatters at the top of this
+# module and intentionally re-exported here for existing importers.

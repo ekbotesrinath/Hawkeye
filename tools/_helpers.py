@@ -6,51 +6,112 @@ used by every tool.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any
 
+from mcp.types import ToolAnnotations
+
 from config.settings import get_active_profile
 from core.audit import log_tool_call
-from core.models import ExecutionStatus
+from core.formatters import (
+    format_date,
+    format_duration,
+    format_relative_time,
+    format_seconds,
+    format_status_icon,
+    format_status_label,
+)
 from core.sanitizer import sanitize
-from providers.base import PipelineProvider
-from providers.harness.client import HarnessAPIError, HarnessClient
+from providers.base import PipelineProvider, ProviderError
+from providers.harness.client import HarnessClient
+
+__all__ = [
+    "clamp_limit",
+    "format_date",
+    "format_duration_ms",
+    "format_relative_time",
+    "format_seconds",
+    "fuzzy_resolve_identifier",
+    "get_provider",
+    "reset_provider",
+    "resolve_pipeline_id",
+    "run_tool",
+    "status_icon",
+    "status_label",
+]
 
 logger = logging.getLogger(__name__)
+
+# Every Hawkeye tool is read-only — advertise that in the MCP protocol so
+# clients can display and authorize them accordingly.
+READ_ONLY_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    openWorldHint=True,
+)
 
 # Cached provider instance
 _provider: PipelineProvider | None = None
 _provider_profile_name: str | None = None
+_provider_lock = asyncio.Lock()
+# Providers replaced by reset/switch, awaiting close on the next async call
+_stale_providers: list[PipelineProvider] = []
+
+
+async def _close_stale_providers() -> None:
+    while _stale_providers:
+        old = _stale_providers.pop()
+        try:
+            await old.close()  # type: ignore[attr-defined]
+        except Exception:
+            logger.debug("Failed to close stale provider", exc_info=True)
 
 
 async def get_provider() -> PipelineProvider:
     """Return the active provider, creating it if needed.
 
-    Raises ``RuntimeError`` with a helpful message if no profile is configured.
+    Thread-/task-safe: a lock prevents two parallel tool calls from racing
+    to create duplicate clients.  Raises ``RuntimeError`` with a helpful
+    message if no profile is configured.
     """
     global _provider, _provider_profile_name  # noqa: PLW0603
 
-    profile = get_active_profile()
-    if profile is None:
-        raise RuntimeError(
-            "No active Hawkeye profile configured. "
-            "Run 'make connect' to set up your Harness account, "
-            "or use hawkeye_connect_account to switch profiles."
-        )
+    async with _provider_lock:
+        await _close_stale_providers()
 
-    # Re-create client if profile changed
-    if _provider is not None and _provider_profile_name == profile.name:
+        profile = get_active_profile()
+        if profile is None:
+            raise RuntimeError(
+                "No active Hawkeye profile configured. "
+                "Run 'make connect' to set up your Harness account, "
+                "or use hawkeye_connect_account to switch profiles."
+            )
+
+        # Re-create client if profile changed
+        if _provider is not None and _provider_profile_name == profile.name:
+            return _provider
+
+        if _provider is not None:
+            _stale_providers.append(_provider)
+            await _close_stale_providers()
+
+        _provider = HarnessClient(profile)
+        _provider_profile_name = profile.name
         return _provider
-
-    _provider = HarnessClient(profile)
-    _provider_profile_name = profile.name
-    return _provider
 
 
 def reset_provider() -> None:
-    """Reset the cached provider (used when switching profiles)."""
+    """Reset the cached provider (used when switching profiles).
+
+    The old client's connection pool is closed on the next
+    :func:`get_provider` call (closing needs an event loop; this function
+    stays sync for existing callers).
+    """
     global _provider, _provider_profile_name  # noqa: PLW0603
+    if _provider is not None:
+        _stale_providers.append(_provider)
     _provider = None
     _provider_profile_name = None
 
@@ -86,7 +147,7 @@ def _friendly_error(exc: Exception) -> str:
     """Translate known exceptions into user-friendly messages."""
     import httpx
 
-    if isinstance(exc, HarnessAPIError):
+    if isinstance(exc, ProviderError):
         code = exc.status_code
         if code == 401:
             return "API token expired or invalid. Run `make connect` to update."
@@ -94,7 +155,7 @@ def _friendly_error(exc: Exception) -> str:
             return "Insufficient permissions for this operation."
         if code == 404:
             return "Execution/pipeline not found. Check the ID or URL."
-        return f"Harness API error ({code}): {exc}"
+        return f"Provider API error ({code}): {exc}"
 
     if isinstance(exc, httpx.ConnectError | httpx.TimeoutException | ConnectionError | OSError):
         return "Cannot reach Harness. Check connectivity and base URL."
@@ -106,111 +167,31 @@ def _friendly_error(exc: Exception) -> str:
 
 
 # ------------------------------------------------------------------
-# Formatting helpers
+# Input validation
 # ------------------------------------------------------------------
 
 
-def format_duration_ms(start_ts: int | None, end_ts: int | None) -> str:
-    """Format a duration from Unix-ms timestamps into human-readable form.
+def clamp_limit(value: int, *, lo: int = 1, hi: int = 50, default: int = 10) -> int:
+    """Clamp a caller-provided list limit into a safe range.
 
-    Returns "14s", "2m 10s", "1h 5m 22s", or "—" if timestamps are missing.
+    Non-integer or absurd values from the model are coerced instead of
+    being passed to the provider API verbatim.
     """
-    if start_ts is None:
-        return "—"
-    elapsed_ms = (
-        int(time.time() * 1000) - start_ts if end_ts is None else end_ts - start_ts
-    )
-
-    if elapsed_ms < 0:
-        return "—"
-
-    total_seconds = elapsed_ms // 1000
-    return format_seconds(total_seconds)
-
-
-def format_seconds(total_seconds: int) -> str:
-    """Format total seconds into human-readable form."""
-    if total_seconds < 0:
-        return "—"
-
-    hours = total_seconds // 3600
-    minutes = (total_seconds % 3600) // 60
-    seconds = total_seconds % 60
-
-    if hours > 0:
-        return f"{hours}h {minutes}m {seconds}s"
-    if minutes > 0:
-        return f"{minutes}m {seconds}s"
-    return f"{seconds}s"
-
-
-def format_date(ts: int | None) -> str:
-    """Format a Unix-ms timestamp as an absolute UTC date: '2024-03-02'."""
-    if ts is None:
-        return "—"
-    from datetime import UTC, datetime
-
     try:
-        return datetime.fromtimestamp(ts / 1000, tz=UTC).strftime("%Y-%m-%d")
-    except (OverflowError, OSError, ValueError):
-        return "—"
+        value = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, value))
 
 
-def format_relative_time(ts: int | None) -> str:
-    """Format a Unix-ms timestamp as relative time: '2h ago', '1d ago', etc."""
-    if ts is None:
-        return "—"
+# ------------------------------------------------------------------
+# Formatting helpers — canonical implementations live in core.formatters;
+# these aliases keep the established tool-facing names stable.
+# ------------------------------------------------------------------
 
-    now_ms = int(time.time() * 1000)
-    diff_ms = now_ms - ts
-    if diff_ms < 0:
-        return "just now"
-
-    diff_seconds = diff_ms // 1000
-
-    if diff_seconds < 60:
-        return "just now"
-    if diff_seconds < 3600:
-        mins = diff_seconds // 60
-        return f"{mins}m ago"
-    if diff_seconds < 86400:
-        hours = diff_seconds // 3600
-        return f"{hours}h ago"
-    days = diff_seconds // 86400
-    return f"{days}d ago"
-
-
-def status_icon(status: ExecutionStatus) -> str:
-    """Map execution status to a display icon."""
-    icons = {
-        ExecutionStatus.SUCCESS: "✅",
-        ExecutionStatus.FAILED: "❌",
-        ExecutionStatus.ERRORED: "❌",
-        ExecutionStatus.ABORTED: "🚫",
-        ExecutionStatus.EXPIRED: "⏰",
-        ExecutionStatus.RUNNING: "🔄",
-        ExecutionStatus.ASYNC_WAITING: "⏳",
-        ExecutionStatus.TASK_WAITING: "⏳",
-        ExecutionStatus.TIMED_WAITING: "⏳",
-        ExecutionStatus.QUEUED: "📋",
-        ExecutionStatus.PAUSED: "⏸️",
-        ExecutionStatus.SKIPPED: "⏭️",
-        ExecutionStatus.NOT_STARTED: "⏭️",
-        ExecutionStatus.APPROVAL_WAITING: "🔐",
-        ExecutionStatus.APPROVAL_REJECTED: "🚫",
-        ExecutionStatus.INPUT_WAITING: "📝",
-        ExecutionStatus.INTERVENTION_WAITING: "🔧",
-        ExecutionStatus.IGNORE_FAILED: "⚠️",
-        ExecutionStatus.SUSPENDED: "💤",
-        ExecutionStatus.ABORTED_BY_FREEZE: "🧊",
-        ExecutionStatus.WAIT_STEP_RUNNING: "⏳",
-    }
-    return icons.get(status, "❓")
-
-
-def status_label(status: ExecutionStatus) -> str:
-    """Map execution status to a short display label."""
-    return f"{status_icon(status)} {status.value.upper()}"
+format_duration_ms = format_duration
+status_icon = format_status_icon
+status_label = format_status_label
 
 
 async def resolve_pipeline_id(pipeline_id: str) -> str:

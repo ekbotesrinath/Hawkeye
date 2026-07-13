@@ -25,6 +25,19 @@ from core.models import (
 )
 
 
+class ProviderError(Exception):
+    """Provider-neutral API error.
+
+    Tools should catch this (not provider-specific subclasses) so they stay
+    portable across providers.  ``status_code`` carries the HTTP status when
+    the underlying provider is REST-based, else 0.
+    """
+
+    def __init__(self, status_code: int, message: str) -> None:
+        self.status_code = status_code
+        super().__init__(message)
+
+
 class PipelineProvider(ABC):
     """Abstract interface for CI/CD pipeline providers."""
 
@@ -35,6 +48,16 @@ class PipelineProvider(ABC):
     @abstractmethod
     async def get_execution_graph(self, execution_id: str) -> ExecutionGraph:
         """Get the execution graph with node hierarchy."""
+
+    @abstractmethod
+    async def get_raw_execution_graph(self, execution_id: str) -> dict:  # type: ignore[type-arg]
+        """Get the raw execution graph node map with provider-native fields.
+
+        Used by investigation tools to access enriched node data
+        (step parameters, executable responses) that the parsed
+        ``ExecutionGraph`` model does not carry.  Providers without a raw
+        graph concept may return ``{}``.
+        """
 
     @abstractmethod
     async def get_step_logs(

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import getpass
 import sys
 
@@ -68,10 +69,8 @@ async def _test_connection(
         return await client.test_connection()
     finally:
         await client.close()
-        try:
+        with contextlib.suppress(Exception):
             delete_token(test_profile_name)
-        except Exception:
-            pass
 
 
 def run_setup() -> None:

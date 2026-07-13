@@ -16,8 +16,10 @@ from __future__ import annotations
 from mcp.server.fastmcp import FastMCP
 
 from core.models import SecretInfo
-from providers.harness.client import HarnessAPIError
+from providers.base import ProviderError
+from providers.harness.parser import split_scope_prefix as _split_scope_prefix
 from tools._helpers import (
+    READ_ONLY_ANNOTATIONS,
     format_date,
     format_relative_time,
     fuzzy_resolve_identifier,
@@ -39,19 +41,10 @@ _PERMISSION_HINT = (
 )
 
 
-def _split_scope_prefix(identifier: str) -> tuple[str, str]:
-    """Split an ``account.`` / ``org.`` scope prefix from a secret ref."""
-    if identifier.startswith("account."):
-        return "account", identifier[len("account."):]
-    if identifier.startswith("org."):
-        return "org", identifier[len("org."):]
-    return "project", identifier
-
-
 def register_secret_tools(mcp: FastMCP) -> None:
     """Register all secret tools on the MCP server."""
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def hawkeye_list_secrets(
         search: str | None = None,
         secret_type: str | None = None,
@@ -87,7 +80,7 @@ def register_secret_tools(mcp: FastMCP) -> None:
             provider = await get_provider()
             try:
                 secrets = await provider.list_secrets(search=search, scope=scope_lower)
-            except HarnessAPIError as exc:
+            except ProviderError as exc:
                 if exc.status_code == 403:
                     return _PERMISSION_HINT
                 raise
@@ -106,7 +99,7 @@ def register_secret_tools(mcp: FastMCP) -> None:
 
         return await run_tool("hawkeye_list_secrets", params, _run())
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     async def hawkeye_check_secret(
         secret_ref: str,
         scope: str = "project",
@@ -145,14 +138,14 @@ def register_secret_tools(mcp: FastMCP) -> None:
             # matching against the secret listing on 404.
             try:
                 secret = await provider.get_secret(bare_id, scope=scope_lower)
-            except HarnessAPIError as exc:
+            except ProviderError as exc:
                 if exc.status_code == 403:
                     return _PERMISSION_HINT
                 if exc.status_code != 404:
                     raise
                 try:
                     secrets = await provider.list_secrets(scope=scope_lower)
-                except HarnessAPIError as list_exc:
+                except ProviderError as list_exc:
                     if list_exc.status_code == 403:
                         return _PERMISSION_HINT
                     raise
