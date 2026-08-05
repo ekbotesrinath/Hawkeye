@@ -8,6 +8,7 @@ __pycache__/
 .coverage
 dist/
 build/
+graphify-out/
 .vscode/mcp.json
 
 # DFIN context symlink (local only, not tracked)
