@@ -7,6 +7,7 @@ per-profile authentication via the OS keyring.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 from typing import Any
@@ -33,9 +34,12 @@ from core.models import (
 )
 from providers.base import PipelineProvider, ProviderError
 from providers.harness.graph_search import (
-    candidate_score,
     extract_log_key,
     extract_logs_from_zip,
+    group_qualifiers_match,
+    qualified_step_ref,
+    select_step_node,
+    split_step_path,
     stage_matches,
 )
 from providers.harness.parser import (
@@ -142,6 +146,41 @@ class HarnessAPIError(ProviderError):
 
     def __init__(self, status_code: int, message: str) -> None:
         super().__init__(status_code, f"Harness API {status_code}: {message}")
+
+
+_MAX_ERROR_DETAIL_CHARS = 2000
+
+
+def _extract_error_detail(body_text: str) -> str:
+    """Extract the human-readable error message from a Harness response body.
+
+    Harness error envelopes carry the real reason in ``message`` /
+    ``detailedMessage`` / ``responseMessages[*].message`` (e.g. ``Invalid
+    failure type INFRASTRUCTURE_FAILURE``).  Surface those verbatim so
+    callers never see a bare status code; fall back to the raw body text.
+    """
+    detail = (body_text or "").strip()
+    try:
+        data = json.loads(body_text)
+    except (ValueError, TypeError):
+        data = None
+    if isinstance(data, dict):
+        parts: list[str] = []
+        for key in ("message", "detailedMessage"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                parts.append(value.strip())
+        responses = data.get("responseMessages")
+        if isinstance(responses, list):
+            for item in responses:
+                if isinstance(item, dict):
+                    msg = item.get("message")
+                    if isinstance(msg, str) and msg.strip():
+                        parts.append(msg.strip())
+        if parts:
+            # De-duplicate while preserving order
+            detail = " | ".join(dict.fromkeys(parts))
+    return detail[:_MAX_ERROR_DETAIL_CHARS]
 
 
 def _raw_node(raw_node_map: dict[str, Any], uuid: str) -> dict[str, Any]:
@@ -266,7 +305,9 @@ class HarnessClient(PipelineProvider):
                         method_upper, path, params=merged_params, json=json_body
                     )
                 if resp.status_code in _RETRYABLE_STATUSES:
-                    last_exc = HarnessAPIError(resp.status_code, resp.text[:200])
+                    last_exc = HarnessAPIError(
+                        resp.status_code, _extract_error_detail(resp.text)
+                    )
                     if attempt + 1 >= _MAX_RETRIES:
                         break
                     wait = _retry_wait(attempt, resp.headers.get("Retry-After"))
@@ -291,7 +332,9 @@ class HarnessClient(PipelineProvider):
                 logger.warning("Timeout on %s (attempt %d/%d)", path, attempt + 1, _MAX_RETRIES)
                 await asyncio.sleep(_retry_wait(attempt))
             except httpx.HTTPStatusError as exc:
-                raise HarnessAPIError(exc.response.status_code, exc.response.text[:200]) from exc
+                raise HarnessAPIError(
+                    exc.response.status_code, _extract_error_detail(exc.response.text)
+                ) from exc
 
         raise last_exc or RuntimeError("Request failed after retries")
 
@@ -437,45 +480,55 @@ class HarnessClient(PipelineProvider):
                 "baseFqn": node.base_fqn,
             }
 
-        # Find the best node matching the step. Some stages contain both a failed
-        # deployment step and a later successful rollback step with the same name.
-        constrained_matches: list[tuple[int, str, Any]] = []
-        unconstrained_matches: list[tuple[int, str, Any]] = []
+        # Resolve the step reference.  step_id may be a runtime node UUID, a
+        # pipeline identifier, a display name, or a group-qualified path like
+        # "deploy_apim/ContainerStep" (Container steps inside step groups all
+        # get the same default name, so the group is part of the address).
+        qualifiers, leaf_ref = split_step_path(step_id)
+        constrained_matches: list[tuple[str, Any]] = []
+        unconstrained_matches: list[tuple[str, Any]] = []
         for uuid, node in graph.nodes.items():
             if not (
-                node.identifier == step_id
-                or node.name.lower() == step_id.lower()
-                or uuid == step_id
+                node.identifier == leaf_ref
+                or node.name.lower() == leaf_ref.lower()
+                or uuid == leaf_ref
             ):
+                continue
+            if not group_qualifiers_match(qualifiers, node.base_fqn):
                 continue
 
             raw_node = _raw_node(raw_node_map, uuid)
-            stage_matched = stage_matches(stage_id, raw_node, base_fqn=node.base_fqn)
-            score = candidate_score(node, step_id=step_id, stage_matched=stage_matched, uuid=uuid)
-            match = (score, uuid, node)
-            if stage_matched:
-                constrained_matches.append(match)
+            if stage_matches(stage_id, raw_node, base_fqn=node.base_fqn):
+                constrained_matches.append((uuid, node))
             else:
-                unconstrained_matches.append(match)
+                unconstrained_matches.append((uuid, node))
+
+        match, ambiguous = select_step_node(
+            constrained_matches or unconstrained_matches, leaf_ref
+        )
+        if ambiguous:
+            # Multiple nodes answer to this reference — never silently pick
+            # one; return the candidates so the caller can address exactly.
+            return {
+                "node": None,
+                "subgraph": None,
+                "ambiguous_matches": [
+                    self._describe_graph_node(uuid, node) for uuid, node in ambiguous
+                ],
+            }
 
         target_node: dict[str, Any] | None = None
         target_uuid: str = ""
-        matches = constrained_matches or unconstrained_matches
-        if matches:
-            _score, target_uuid, target = max(matches, key=lambda item: item[0])
+        if match is not None:
+            target_uuid, target = match
             target_node = _build_target(target_uuid, target)
 
         if target_node is None:
             # Collect available nodes so the caller can suggest valid step IDs
-            available: list[dict[str, Any]] = []
-            for _uuid, n in graph.nodes.items():
-                available.append({
-                    "identifier": n.identifier,
-                    "name": n.name,
-                    "step_type": n.step_type,
-                    "status": n.status.value,
-                    "base_fqn": n.base_fqn,
-                })
+            available = [
+                self._describe_graph_node(uuid, n)
+                for uuid, n in graph.nodes.items()
+            ]
             return {"node": None, "subgraph": None, "available_nodes": available}
 
         # Fetch subgraph for enriched data
@@ -505,6 +558,24 @@ class HarnessClient(PipelineProvider):
             "subgraph": subgraph_data,
             "api_logs": api_logs,
             "api_log_key": api_log_key,
+        }
+
+    @staticmethod
+    def _describe_graph_node(uuid: str, node: Any) -> dict[str, Any]:
+        """Summarize a graph node for candidate / available-step listings.
+
+        ``qualified_id`` is the group-qualified reference (``group/step``)
+        that ``get_step_logs`` accepts back as *step_id*; ``uuid`` is the
+        runtime node execution ID, also accepted.
+        """
+        return {
+            "uuid": uuid,
+            "identifier": node.identifier,
+            "name": node.name,
+            "qualified_id": qualified_step_ref(node.base_fqn, node.identifier or node.name),
+            "step_type": node.step_type,
+            "status": node.status.value,
+            "base_fqn": node.base_fqn,
         }
 
     async def _download_logs_for_key(self, log_key: str) -> str | None:
@@ -578,7 +649,15 @@ class HarnessClient(PipelineProvider):
         limit: int = 10,
         status: ExecutionStatus | None = None,
     ) -> list[PipelineExecution]:
-        """List recent executions for a pipeline."""
+        """List recent executions for a pipeline.
+
+        The filter body only ever contains fields the caller explicitly
+        supplied.  Harness rejects filter enum values it does not know with
+        a 400 (e.g. ``Invalid failure type INFRASTRUCTURE_FAILURE`` on API
+        versions that don't accept that ``failureTypes`` value), so no
+        default ``failureTypes``/``moduleProperties``/other implicit filters
+        may ever be added here.
+        """
         body: dict[str, Any] = {
             "filterType": "PipelineExecution",
             "pipelineIdentifiers": [pipeline_id],

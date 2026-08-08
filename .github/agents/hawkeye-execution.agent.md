@@ -28,10 +28,10 @@ You are the expert on pipeline execution data. You retrieve, parse, and present 
 |------|-------------|
 | `hawkeye_get_all_stages` | **PREFERRED** when the user asks for "all stages", "full breakdown", or "what happened in this run". Returns every stage with steps in one call, with failed step details inline and skipped-stage collapsing. |
 | `hawkeye_get_execution` | First call for any execution investigation. Pass a Harness URL or execution ID. Returns pipeline name, status, duration, trigger info, all stages with status, and failure details. |
-| `hawkeye_get_stage_detail` | After identifying a specific stage of interest. Returns every step within the stage — name, status, duration, delegate info, step type, and failure details. |
-| `hawkeye_get_step_logs` | After identifying a specific failed step. Returns step execution details — script source, output variables, failure info, environment variables. |
+| `hawkeye_get_stage_detail` | After identifying a specific stage of interest. Returns every step within the stage — name, status, duration, delegate info, step type, failure details, plus each step's addressable `Step ID` (group-qualified) and `Node UUID` for `hawkeye_get_step_logs`. |
+| `hawkeye_get_step_logs` | After identifying a specific failed step. Returns step execution details — script source, output variables, failure info, console logs. `step_id` accepts an identifier/name, a group-qualified path (`deploy_apim/ContainerStep` — needed when step groups reuse the same step name), or a node UUID; ambiguous names return a candidate list to retry with. Console logs default to the last 100 lines — page with `log_start` (1-based) and `log_lines` when the content you need is earlier. |
 | `hawkeye_get_execution_inputs` | When checking what runtime variables or input sets were used for a run. Returns the input YAML. |
-| `hawkeye_list_recent_executions` | For pipeline health overview. Returns a summary table of recent runs with status, branch, trigger, and duration. Filter by status to find failures. |
+| `hawkeye_list_recent_executions` | For pipeline health overview. Returns a summary table of recent runs with status, branch, trigger, and duration. Filter by status to find failures — pass a Harness execution status (`Failed`, `Aborted`, …), not a failure type; invalid values are rejected with the valid list. |
 
 ## URL Handling
 

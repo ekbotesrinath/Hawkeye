@@ -166,6 +166,49 @@ def truncate_logs(log_text: str, max_lines: int = 200) -> str:
     )
 
 
+def format_log_window(raw_logs: str, *, start_line: int = 0, max_lines: int = 100) -> str:
+    """Return a paginated line window of log text with explicit truncation notes.
+
+    ``start_line=0`` (the default) returns the tail window — the last
+    *max_lines* lines, matching the historical behaviour.  ``start_line>=1``
+    returns *max_lines* lines starting at that 1-based line number, so any
+    part of a long log is reachable.
+
+    Whenever lines are omitted the window says so explicitly, states the
+    total line count, and names the ``log_start`` value that fetches the
+    omitted part — the caller is never left guessing whether output was
+    dropped.
+    """
+    if not raw_logs:
+        return raw_logs
+    lines = raw_logs.splitlines()
+    total = len(lines)
+    if start_line > total:
+        return (
+            f"[log window: empty — log_start={start_line} is beyond the end; "
+            f"the log has {total} lines]"
+        )
+    first = total - max_lines if start_line <= 0 else start_line - 1
+    first = max(first, 0)
+    last = min(first + max_lines, total)  # exclusive
+    if first == 0 and last == total:
+        return raw_logs
+    header = [f"[log window: lines {first + 1}-{last} of {total}]"]
+    if first > 0:
+        header.append(
+            f"... {first} earlier lines omitted — pass log_start=1 to read from "
+            f"the beginning (or log_start={max(1, first - max_lines + 1)} for the "
+            f"previous page)"
+        )
+    parts = ["\n".join(header), "\n".join(lines[first:last])]
+    if last < total:
+        parts.append(
+            f"... {total - last} later lines omitted — pass log_start={last + 1} "
+            f"for the next page"
+        )
+    return "\n".join(parts)
+
+
 def truncate_to_tail(raw_logs: str, max_lines: int = 100) -> str:
     """Return the last *max_lines* lines from raw log text.
 

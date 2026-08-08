@@ -31,7 +31,10 @@ tools/*.py → tools/_gather.py → providers/base.py → providers/harness/*.py
 ### Execution (8)
 - `hawkeye_get_execution` — full execution detail from ID or URL
 - `hawkeye_get_stage_detail` — step-by-step stage breakdown
-- `hawkeye_get_step_logs` — raw log output (last 200 lines, secrets masked)
+- `hawkeye_get_step_logs` — raw log output (paginated: defaults to last 100
+  lines, `log_start`/`log_lines` read any window; secrets masked). `step_id`
+  accepts identifier/name, group-qualified `group/step`, or node UUID;
+  ambiguous references error with a candidate list
 - `hawkeye_get_execution_inputs` — runtime input YAML
 - `hawkeye_list_recent_executions` — recent runs with status filter
 - `hawkeye_get_all_stages` — all stages with steps in one call

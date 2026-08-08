@@ -111,6 +111,13 @@ class StepExecution(BaseModel):
         default=None, description="Delegate that executed this step"
     )
     outcomes: dict | None = Field(default=None, description="Step outcome metadata")  # type: ignore[type-arg]
+    group_path: str = Field(
+        default="",
+        description=(
+            "Step-group path within the stage (e.g. 'deploy_apim', or "
+            "'rollbackSteps' for rollback twins); empty for top-level steps"
+        ),
+    )
 
 
 class StageExecution(BaseModel):

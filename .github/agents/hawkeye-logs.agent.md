@@ -74,7 +74,7 @@ Classify every failure into exactly one category:
 
 | Tool | When to Use |
 |------|-------------|
-| `hawkeye_get_step_logs` | Get raw log output from a specific failed step. Requires execution_id + stage_id + step_id, or a Harness URL. Logs are truncated to the last 200 lines and secrets are masked. |
+| `hawkeye_get_step_logs` | Get raw log output from a specific failed step. Requires execution_id + stage_id + step_id, or a Harness URL. Console logs default to the last 100 lines; pass `log_start` (1-based) and `log_lines` to read any window of a long log. For duplicate step names inside step groups, use a group-qualified `step_id` (`deploy_apim/ContainerStep`) or the node UUID from `hawkeye_get_stage_detail`. Secrets are masked. |
 | `hawkeye_get_stage_detail` | Get the full step list for a stage to identify which steps failed and their step IDs before pulling logs. |
 
 ## Output Format

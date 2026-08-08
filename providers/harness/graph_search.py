@@ -16,8 +16,6 @@ import re
 import zipfile
 from typing import Any
 
-from core.models import ExecutionStatus
-
 logger = logging.getLogger(__name__)
 
 _MAX_LOG_DECOMPRESSED_BYTES = 20 * 1024 * 1024  # 20 MB extracted
@@ -86,20 +84,107 @@ def stage_matches(
     return bool(stage_tokens) and stage_tokens.issubset(extracted_tokens)
 
 
-def candidate_score(node: Any, *, step_id: str, stage_matched: bool, uuid: str) -> int:
-    """Score a matched graph node so the best step candidate wins."""
-    score = 0
-    if uuid == step_id:
-        score += 100
-    if node.identifier == step_id:
-        score += 90
-    if node.name.lower() == step_id.lower():
-        score += 80
-    if stage_matched:
-        score += 40
-    if node.status in {ExecutionStatus.FAILED, ExecutionStatus.ERRORED, ExecutionStatus.EXPIRED}:
-        score += 20
-    return score
+# ------------------------------------------------------------------
+# Step addressing — group-qualified paths and duplicate resolution
+# ------------------------------------------------------------------
+
+# baseFqn segments that are pipeline structure, not user-named entities.
+# "rollbackSteps" is deliberately NOT here — it distinguishes a rollback
+# duplicate from its main-path twin.
+_STRUCTURAL_FQN_SEGMENTS = frozenset({"pipeline", "spec", "execution", "steps", "stepGroup"})
+
+
+def split_step_path(step_ref: str) -> tuple[list[str], str]:
+    """Split a possibly group-qualified step reference into (qualifiers, leaf).
+
+    ``"deploy_apim/ContainerStep"`` → ``(["deploy_apim"], "ContainerStep")``.
+    An unqualified reference returns no qualifiers.
+    """
+    parts = [p.strip() for p in step_ref.split("/") if p.strip()]
+    if not parts:
+        return [], step_ref
+    return parts[:-1], parts[-1]
+
+
+def group_qualifiers_match(qualifiers: list[str], base_fqn: str | None) -> bool:
+    """Return True when every qualifier appears as a segment of *base_fqn*.
+
+    Qualifiers name step groups (or the stage) on the node's path; matching
+    is fuzzy-normalized so ``deploy-apim`` matches ``deploy_apim``.
+    """
+    if not qualifiers:
+        return True
+    if not base_fqn:
+        return False
+    segments = {_normalize_lookup_token(seg) for seg in base_fqn.split(".")}
+    return all(_normalize_lookup_token(q) in segments for q in qualifiers)
+
+
+def is_rollback_fqn(base_fqn: str | None) -> bool:
+    """Return True when a node lives in a stage's rollbackSteps section."""
+    return base_fqn is not None and ".rollbackSteps" in base_fqn
+
+
+def derive_group_path(base_fqn: str | None, identifier: str = "") -> str:
+    """Derive a node's step-group path within its stage from its baseFqn.
+
+    ``pipeline.stages.cd_dev.spec.execution.steps.deploy_apim.steps.ContainerStep``
+    → ``deploy_apim``.  Rollback steps keep a ``rollbackSteps`` segment so a
+    rollback twin never collides with its main-path step.  Top-level steps
+    return ``""``.
+    """
+    if not base_fqn:
+        return ""
+    parts = base_fqn.split(".")
+    try:
+        idx = parts.index("stages")
+    except ValueError:
+        return ""
+    # Skip "stages" and the stage identifier itself
+    path = [seg for seg in parts[idx + 2:] if seg not in _STRUCTURAL_FQN_SEGMENTS]
+    # baseFqn usually ends with the node's own identifier — that's the leaf,
+    # not part of the group path.
+    if path and identifier and path[-1] == identifier:
+        path = path[:-1]
+    return "/".join(path)
+
+
+def qualified_step_ref(base_fqn: str | None, identifier: str) -> str:
+    """Build the group-qualified step reference callers can pass as step_id."""
+    group = derive_group_path(base_fqn, identifier)
+    return f"{group}/{identifier}" if group else identifier
+
+
+def select_step_node(
+    pool: list[tuple[str, Any]], leaf_ref: str
+) -> tuple[tuple[str, Any] | None, list[tuple[str, Any]]]:
+    """Resolve which node a step reference addresses, or report ambiguity.
+
+    *pool* holds ``(uuid, node)`` pairs that already matched *leaf_ref* by
+    UUID, identifier, or display name (with stage/group constraints applied).
+    Resolution prefers the most specific addressing tier: runtime UUID, then
+    pipeline identifier, then display name.  Within a tier, a single
+    main-path step beats rollback duplicates (the deploy/rollback same-name
+    pattern).  Anything still ambiguous is returned as candidates — never
+    silently first-matched.
+
+    Returns ``(match, ambiguous)``: exactly one is populated for a
+    non-empty pool.
+    """
+    if not pool:
+        return None, []
+    leaf_lower = leaf_ref.lower()
+    uuid_tier = [(u, n) for u, n in pool if u == leaf_ref]
+    ident_tier = [(u, n) for u, n in pool if n.identifier == leaf_ref]
+    name_tier = [(u, n) for u, n in pool if n.name.lower() == leaf_lower]
+    tier = uuid_tier or ident_tier or name_tier or pool
+    if len(tier) > 1:
+        main_path = [(u, n) for u, n in tier if not is_rollback_fqn(n.base_fqn)]
+        if len(main_path) == 1:
+            tier = main_path
+    if len(tier) == 1:
+        return tier[0], []
+    return None, tier
 
 
 # ------------------------------------------------------------------
