@@ -7,6 +7,7 @@ import time
 from core.formatters import (
     format_duration,
     format_execution_table,
+    format_log_window,
     format_relative_time,
     format_status_icon,
     truncate_logs,
@@ -181,3 +182,66 @@ class TestTruncateLogs:
         result = truncate_logs("\n".join(lines), max_lines=10)
         assert "40 lines truncated" in result
         assert "line49" in result
+
+
+# ------------------------------------------------------------------
+# format_log_window — paginated log windows (Bug 3 regression)
+# ------------------------------------------------------------------
+
+
+class TestFormatLogWindow:
+    def _log(self, n: int) -> str:
+        return "\n".join(f"line {i}" for i in range(1, n + 1))
+
+    def test_short_log_returned_unchanged(self) -> None:
+        raw = self._log(50)
+        assert format_log_window(raw, start_line=0, max_lines=100) == raw
+
+    def test_default_is_tail_window_with_explicit_truncation_note(self) -> None:
+        result = format_log_window(self._log(300), start_line=0, max_lines=100)
+        assert "[log window: lines 201-300 of 300]" in result
+        assert "200 earlier lines omitted" in result
+        assert "log_start=1" in result  # tells the caller how to page back
+        assert "line 300" in result
+        assert "line 200\n" not in result
+
+    def test_start_line_reads_from_beginning(self) -> None:
+        result = format_log_window(self._log(300), start_line=1, max_lines=100)
+        assert "[log window: lines 1-100 of 300]" in result
+        assert "line 1" in result
+        assert "200 later lines omitted" in result
+        assert "log_start=101" in result  # next page pointer
+
+    def test_middle_window_notes_both_directions(self) -> None:
+        result = format_log_window(self._log(300), start_line=150, max_lines=100)
+        assert "[log window: lines 150-249 of 300]" in result
+        assert "149 earlier lines omitted" in result
+        assert "51 later lines omitted" in result
+        assert "log_start=250" in result
+        assert "line 150" in result
+        assert "line 249" in result
+
+    def test_full_log_reachable_by_paging(self) -> None:
+        """Every line of a long log is reachable across successive windows."""
+        raw = self._log(250)
+        seen: set[str] = set()
+        for start in (1, 101, 201):
+            window = format_log_window(raw, start_line=start, max_lines=100)
+            seen.update(
+                line for line in window.splitlines() if line.startswith("line ")
+            )
+        assert seen == set(raw.splitlines())
+
+    def test_start_beyond_end_states_total(self) -> None:
+        result = format_log_window(self._log(10), start_line=500, max_lines=100)
+        assert "log_start=500 is beyond the end" in result
+        assert "10 lines" in result
+
+    def test_last_partial_page(self) -> None:
+        result = format_log_window(self._log(250), start_line=201, max_lines=100)
+        assert "[log window: lines 201-250 of 250]" in result
+        assert "later lines omitted" not in result
+        assert "200 earlier lines omitted" in result
+
+    def test_empty_input(self) -> None:
+        assert format_log_window("", start_line=0, max_lines=100) == ""

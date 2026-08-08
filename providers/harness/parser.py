@@ -29,6 +29,7 @@ from core.models import (
     StepExecution,
     TemplateSummary,
 )
+from providers.harness.graph_search import derive_group_path
 
 logger = logging.getLogger(__name__)
 
@@ -236,6 +237,7 @@ def _to_step(node_id: str, node: dict[str, Any]) -> StepExecution:
         failure_info=_parse_failure_info(node.get("failureInfo")),
         delegate_info=_parse_delegate_info(node.get("delegateInfoList")),
         outcomes=node.get("outcomes"),
+        group_path=derive_group_path(node.get("baseFqn", ""), node.get("identifier", "")),
     )
 
 

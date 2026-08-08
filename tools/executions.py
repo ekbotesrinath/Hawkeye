@@ -18,7 +18,7 @@ import logging
 
 from mcp.server.fastmcp import FastMCP
 
-from core.formatters import truncate_to_tail
+from core.formatters import format_log_window
 from core.models import (
     FAILED_STATUSES,
     SKIPPED_STATUSES,
@@ -130,21 +130,37 @@ def register_execution_tools(mcp: FastMCP) -> None:
         stage_id: str = "",
         step_id: str = "",
         url: str = "",
+        log_start: int = 0,
+        log_lines: int = 100,
     ) -> str:
         """Get detailed step execution information including script source,
-        outputs, and failure details.
+        outputs, console logs, and failure details.
 
-        Extracts step data from the Harness execution graph — shows what
-        script was executed, what it output, and why it failed.
+        Canonical parameters: execution_id + stage_id + step_id.  The only
+        alias form is url= (a Harness UI execution URL; its ?stage= and
+        ?step= query params fill stage_id/step_id and take precedence over
+        the explicit parameters).  There are no bare `stage`/`step`
+        parameters — those spellings are rejected by the schema.
 
-        Provide either execution_id + stage_id + step_id, or a Harness URL
-        with stage and step parameters.
+        step_id accepts: a step identifier or display name, a
+        group-qualified path for steps inside step groups (e.g.
+        `deploy_apim/ContainerStep` — required when two groups reuse the
+        same step name), or the runtime node UUID shown by
+        hawkeye_get_stage_detail.  An ambiguous step_id returns the list of
+        matching candidates instead of guessing.
+
+        Console logs are paginated: by default the LAST log_lines lines are
+        returned; pass log_start=<1-based line number> to read a window
+        starting there (log_start=1 reads from the beginning).  Truncation
+        is always stated explicitly in the output.
         """
         params = {
             "execution_id": execution_id,
             "stage_id": stage_id,
             "step_id": step_id,
             "url": url,
+            "log_start": log_start,
+            "log_lines": log_lines,
         }
 
         async def _run() -> str:
@@ -160,16 +176,49 @@ def register_execution_tools(mcp: FastMCP) -> None:
                 if parsed.step_id:
                     stid = parsed.step_id
             if not eid:
-                return "Error: Provide execution_id or a Harness URL."
+                return (
+                    "Error: Provide execution_id (canonical form: execution_id"
+                    " + stage_id + step_id) or url=<Harness execution URL>."
+                )
             if not sid:
-                return "Error: Provide stage_id or a Harness URL with ?stage= parameter."
+                return (
+                    "Error: Provide stage_id (canonical form: execution_id + "
+                    "stage_id + step_id) or a Harness URL with ?stage=."
+                )
             if not stid:
-                return "Error: Provide step_id or a Harness URL with ?step= parameter."
+                return (
+                    "Error: Provide step_id (canonical form: execution_id + "
+                    "stage_id + step_id) or a Harness URL with ?step=."
+                )
 
             provider = await get_provider()
             result = await provider.get_step_logs(eid, sid, stid)
             node_data = result.get("node")
             subgraph_data = result.get("subgraph")
+
+            ambiguous = result.get("ambiguous_matches") or []
+            if ambiguous:
+                lines = [
+                    f"❌ Ambiguous step_id `{stid}` in stage `{sid}` — "
+                    f"{len(ambiguous)} steps match. Retry with one of:",
+                    "",
+                ]
+                for c in ambiguous:
+                    icon = status_icon(
+                        ExecutionStatus.from_str(c.get("status", "Unknown"))
+                    )
+                    lines.append(
+                        f'  • step_id="{c.get("qualified_id") or c.get("identifier")}"'
+                        f" — {c.get('name')} ({c.get('step_type')})"
+                        f" {icon} {c.get('status')}"
+                        f" [node UUID: `{c.get('uuid')}`]"
+                    )
+                lines.append("")
+                lines.append(
+                    "Use the group-qualified form `<step_group>/<step>` or the "
+                    "node UUID as step_id."
+                )
+                return "\n".join(lines)
 
             if node_data is None:
                 lines = [f"⚠️ Step `{stid}` not found in stage `{sid}`."]
@@ -192,8 +241,9 @@ def register_execution_tools(mcp: FastMCP) -> None:
                                     stage_hint = f" [stage: {parts[idx + 1]}]"
                             except ValueError:
                                 pass
+                        step_ref = n.get("qualified_id") or n["identifier"]
                         lines.append(
-                            f"  • {n['identifier']} ({n['step_type']}) "
+                            f"  • {step_ref} ({n['step_type']}) "
                             f"— {icon} {n['status']}{stage_hint}"
                         )
                 return "\n".join(lines)
@@ -201,10 +251,15 @@ def register_execution_tools(mcp: FastMCP) -> None:
             # Tier 1: Graph/subgraph data (always available)
             details = extract_node_details(node_data, subgraph_data)
 
-            # Tier 2: Official Harness Log Service API console logs
+            # Tier 2: Official Harness Log Service API console logs, windowed
+            # so any part of a long log is reachable (log_start pages it).
             api_logs = result.get("api_logs")
             if api_logs:
-                api_logs = truncate_to_tail(str(api_logs))
+                api_logs = format_log_window(
+                    str(api_logs),
+                    start_line=max(0, int(log_start)),
+                    max_lines=clamp_limit(log_lines, lo=1, hi=1000, default=100),
+                )
 
             # Combine graph data + console logs
             header = f"## Step Details: `{stid}`\nExecution: `{eid}` | Stage: `{sid}`\n\n"
@@ -259,15 +314,30 @@ def register_execution_tools(mcp: FastMCP) -> None:
 
         Useful for seeing execution history at a glance. Filter by status (e.g. "Failed")
         to find recent failures.
+
+        No filters are sent to Harness unless supplied here; an unrecognised
+        status value is rejected client-side with the list of valid values
+        (Harness 400s on unknown filter enums).
         """
         params = {"pipeline_id": pipeline_id, "limit": limit, "status": status}
 
         async def _run() -> str:
             safe_limit = clamp_limit(limit)
-            resolved_id = await resolve_pipeline_id(pipeline_id)
             status_filter = None
             if status:
                 status_filter = ExecutionStatus.from_str(status)
+                if (
+                    status_filter is ExecutionStatus.UNKNOWN
+                    and status.strip() != ExecutionStatus.UNKNOWN.value
+                ):
+                    valid = ", ".join(
+                        s.value for s in ExecutionStatus if s is not ExecutionStatus.UNKNOWN
+                    )
+                    return (
+                        f"Error: '{status}' is not a valid execution status filter, "
+                        f"so it was not sent to Harness. Valid values: {valid}."
+                    )
+            resolved_id = await resolve_pipeline_id(pipeline_id)
 
             provider = await get_provider()
             executions = await provider.list_recent_executions(
@@ -774,16 +844,20 @@ def _format_stage_detail(execution: PipelineExecution, stage: StageExecution) ->
         return "\n".join(lines)
 
     lines.append("### Steps:")
-    lines.append("| # | Step | Type | Status | Duration | Delegate |")
-    lines.append("|---|------|------|--------|----------|----------|")
+    lines.append("| # | Step | Type | Status | Duration | Delegate | Step ID | Node UUID |")
+    lines.append("|---|------|------|--------|----------|----------|---------|-----------|")
 
     for i, step in enumerate(stage.steps, 1):
         dur = format_duration_ms(step.start_ts, step.end_ts)
         icon = status_icon(step.status)
         delegate = step.delegate_info or "—"
+        step_ref = (
+            f"{step.group_path}/{step.identifier}" if step.group_path else step.identifier
+        )
         lines.append(
             f"| {i} | {step.name} | {step.step_type}"
-            f" | {icon} {step.status.value} | {dur} | {delegate} |"
+            f" | {icon} {step.status.value} | {dur} | {delegate}"
+            f" | `{step_ref}` | `{step.step_id}` |"
         )
 
         if step.failure_info and step.failure_info.message:
@@ -795,6 +869,12 @@ def _format_stage_detail(execution: PipelineExecution, stage: StageExecution) ->
             lines.append("")
             lines.append(f'**Step {i} Failure:** {ftypes} — "{step.failure_info.message}"')
 
+    lines.append("")
+    lines.append(
+        "Pass `Step ID` (group-qualified: `<step_group>/<step>`) or `Node UUID` "
+        "as `step_id` to hawkeye_get_step_logs — bare step names are ambiguous "
+        "when step groups reuse the same step name."
+    )
     return "\n".join(lines)
 
 

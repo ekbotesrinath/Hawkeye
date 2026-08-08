@@ -58,7 +58,7 @@ make server
 |---|------|----------|-------------|
 | 1 | `hawkeye_get_execution` | Execution | Full execution detail — status, stages, failures, deep link |
 | 2 | `hawkeye_get_stage_detail` | Execution | Step-by-step breakdown of a single stage |
-| 3 | `hawkeye_get_step_logs` | Execution | Raw log output from a specific step (secrets masked) |
+| 3 | `hawkeye_get_step_logs` | Execution | Raw log output from a specific step (secrets masked; paginated via `log_start`/`log_lines`; `step_id` takes `group/step` paths or node UUIDs for duplicate step names) |
 | 4 | `hawkeye_get_execution_inputs` | Execution | Runtime input YAML used for an execution |
 | 5 | `hawkeye_list_recent_executions` | Execution | Recent executions (filterable by status) |
 | 6 | `hawkeye_get_all_stages` | Execution | ALL stages with steps in one call (skipped-stage collapsing) |

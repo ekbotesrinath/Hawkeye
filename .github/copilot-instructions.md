@@ -9,12 +9,19 @@ Hawkeye is a read-only MCP server for pipeline observability. It connects to Har
 | Tool | Description | When to Use |
 |------|-------------|-------------|
 | `hawkeye_get_execution` | Full execution detail — status, stages, failures, deep link | First tool to call when investigating any execution. Accepts Harness URLs. |
-| `hawkeye_get_stage_detail` | Step-by-step breakdown of a single stage | After `hawkeye_get_execution` identifies a failed stage |
-| `hawkeye_get_step_logs` | Step execution details — script source, outputs, failure info (secrets masked) | After identifying a failed step — get what was executed and why it failed |
+| `hawkeye_get_stage_detail` | Step-by-step breakdown of a single stage, including each step's addressable `Step ID` (group-qualified) and `Node UUID` | After `hawkeye_get_execution` identifies a failed stage — its output feeds directly into `hawkeye_get_step_logs` |
+| `hawkeye_get_step_logs` | Step execution details — script source, outputs, console logs (paginated), failure info (secrets masked) | After identifying a failed step — get what was executed and why it failed. See "Step addressing & log pagination" below. |
 | `hawkeye_get_all_stages` | ALL stages with steps in ONE call — bulk detail with skipped-stage collapsing | When the user asks for "all stages", "full breakdown", or "what happened in this run" |
 | `hawkeye_get_execution_inputs` | Runtime input YAML used for an execution | When checking what variables/inputs were used for a run |
-| `hawkeye_list_recent_executions` | Recent executions for a pipeline (filterable by status) | Overview of pipeline health, finding recent failures |
+| `hawkeye_list_recent_executions` | Recent executions for a pipeline (filterable by status — must be a Harness execution status like `Failed`, not a failure type; invalid values are rejected with the valid list) | Overview of pipeline health, finding recent failures |
 | `hawkeye_check_approvals` | Check pending/completed/rejected approval gates with approver info | When a pipeline appears stuck — check if it's waiting for approval |
+
+#### Step addressing & log pagination (`hawkeye_get_step_logs`)
+
+- **Canonical parameters**: `execution_id` + `stage_id` + `step_id`. The only alias is `url=` (a Harness UI URL; its `?stage=`/`?step=` query params fill stage/step and take precedence). There are no bare `stage`/`step` parameters.
+- **`step_id` accepts**: a step identifier or display name; a group-qualified path `<step_group>/<step>` (e.g. `deploy_apim/ContainerStep`); or the `Node UUID` shown by `hawkeye_get_stage_detail`.
+- **Duplicate step names are normal** — Container steps inside step groups all get the same default name. A bare name that matches more than one step returns an error listing the candidates with their qualified IDs and UUIDs; retry with one of those. Never assume the returned logs are the right step if you addressed it ambiguously.
+- **Console logs are paginated**: default is the LAST 100 lines. Pass `log_start=1` to read from the beginning, `log_start=<n>` for a window starting at line n, `log_lines` (max 1000) for window size. Truncation is always stated in the output with the exact `log_start` to fetch the omitted part — if the note says lines were omitted, the content you need may be in them.
 
 ### Pipeline Tools
 
@@ -101,7 +108,7 @@ All Hawkeye tools are:
 2. If pipeline name is known: `hawkeye_get_failure_pattern` for recurring issues
 
 **Phase 2 — Targeted Follow-up** (based on Phase 1 results):
-- If a specific step needs deeper logs: `hawkeye_get_step_logs`
+- If a specific step needs deeper logs: `hawkeye_get_stage_detail` first (to get the step's addressable `Step ID`/`Node UUID`), then `hawkeye_get_step_logs`. If the content you need is early in a long log, page with `log_start=1`.
 - If comparing with a previous run: `hawkeye_compare_executions`
 - If pipeline config might be the issue: `hawkeye_get_pipeline_definition`
 

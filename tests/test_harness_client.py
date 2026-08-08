@@ -693,6 +693,70 @@ class TestListRecentExecutions:
         )
         assert results == []
 
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_no_implicit_filters_in_body(self, client: HarnessClient) -> None:
+        """Regression (Bug 2): the filter body must contain ONLY what the
+        caller supplied — no failureTypes or other implicit filters that some
+        Harness API versions reject with a 400."""
+        route = respx.post(
+            "https://app.harness.io/pipeline/api/pipelines/execution/summary"
+        ).mock(
+            return_value=httpx.Response(
+                200, json={"status": "SUCCESS", "data": {"content": []}}
+            )
+        )
+
+        await client.list_recent_executions("cd_search_schema_provisioner")
+        body = json.loads(route.calls[0].request.content)
+        assert body == {
+            "filterType": "PipelineExecution",
+            "pipelineIdentifiers": ["cd_search_schema_provisioner"],
+        }
+
+        await client.list_recent_executions(
+            "cd_search_schema_provisioner", status=ExecutionStatus.FAILED
+        )
+        body = json.loads(route.calls[1].request.content)
+        assert body == {
+            "filterType": "PipelineExecution",
+            "pipelineIdentifiers": ["cd_search_schema_provisioner"],
+            "status": ["Failed"],
+        }
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_harness_400_body_surfaced_verbatim(
+        self, client: HarnessClient
+    ) -> None:
+        """Regression (Bug 2): the Harness error body must reach the caller,
+        not a bare 400."""
+        respx.post(
+            "https://app.harness.io/pipeline/api/pipelines/execution/summary"
+        ).mock(
+            return_value=httpx.Response(
+                400,
+                json={
+                    "status": "ERROR",
+                    "code": "INVALID_REQUEST",
+                    "message": "Invalid request: cannot parse filter",
+                    "responseMessages": [
+                        {
+                            "code": "INVALID_REQUEST",
+                            "level": "ERROR",
+                            "message": "Invalid failure type INFRASTRUCTURE_FAILURE",
+                        }
+                    ],
+                },
+            )
+        )
+
+        with pytest.raises(HarnessAPIError) as exc_info:
+            await client.list_recent_executions("cd_search_schema_provisioner")
+        assert exc_info.value.status_code == 400
+        assert "Invalid failure type INFRASTRUCTURE_FAILURE" in str(exc_info.value)
+        assert "Invalid request: cannot parse filter" in str(exc_info.value)
+
 
 class TestListProjectExecutions:
     @respx.mock
