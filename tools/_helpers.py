@@ -29,6 +29,8 @@ from providers.harness.client import HarnessClient
 
 __all__ = [
     "clamp_limit",
+    "clear_scope_override",
+    "current_scope_override",
     "format_date",
     "format_duration_ms",
     "format_relative_time",
@@ -38,6 +40,7 @@ __all__ = [
     "reset_provider",
     "resolve_pipeline_id",
     "run_tool",
+    "set_scope_override",
     "status_icon",
     "status_label",
 ]
@@ -54,8 +57,39 @@ READ_ONLY_ANNOTATIONS = ToolAnnotations(
 
 # Cached provider instance
 _provider: PipelineProvider | None = None
-_provider_profile_name: str | None = None
+# Keyed by (profile name, org, project): the same credential aimed at two
+# projects is two different clients.
+_provider_key: tuple[str, str, str] | None = None
 _provider_lock = asyncio.Lock()
+
+# An org/project this profile's credential should be pointed at, instead of the
+# org/project the profile was created with.
+#
+# A Harness API token is issued at account scope, so one profile's credential
+# usually reaches every project in that account. Without this, seeing another
+# project meant creating another profile by hand — and any project nobody had
+# thought to add was simply invisible, with nothing to say so. The token is
+# still read from the named profile's keyring entry and is never a parameter;
+# only the coordinates it is aimed at change.
+_scope_override: tuple[str, str] | None = None
+
+
+def set_scope_override(org: str, project: str) -> None:
+    """Point the active profile's credential at *org*/*project*."""
+    global _scope_override  # noqa: PLW0603
+    _scope_override = (org, project)
+
+
+def clear_scope_override() -> None:
+    """Go back to the org/project the active profile was created with."""
+    global _scope_override  # noqa: PLW0603
+    _scope_override = None
+
+
+def current_scope_override() -> tuple[str, str] | None:
+    return _scope_override
+
+
 # Providers replaced by reset/switch, awaiting close on the next async call
 _stale_providers: list[PipelineProvider] = []
 
@@ -76,7 +110,7 @@ async def get_provider() -> PipelineProvider:
     to create duplicate clients.  Raises ``RuntimeError`` with a helpful
     message if no profile is configured.
     """
-    global _provider, _provider_profile_name  # noqa: PLW0603
+    global _provider, _provider_key  # noqa: PLW0603
 
     async with _provider_lock:
         await _close_stale_providers()
@@ -89,8 +123,20 @@ async def get_provider() -> PipelineProvider:
                 "or use hawkeye_connect_account to switch profiles."
             )
 
-        # Re-create client if profile changed
-        if _provider is not None and _provider_profile_name == profile.name:
+        # A scope override keeps the profile's name — and therefore its keyring
+        # entry — and changes only the coordinates the credential is aimed at.
+        if _scope_override is not None:
+            org, project = _scope_override
+            profile = profile.model_copy(
+                update={"org_identifier": org, "project_identifier": project}
+            )
+
+        # The cache key has to include the scope, not just the profile name.
+        # Keying on the name alone would hand back a client still pointed at
+        # the previous project and quietly answer the wrong question.
+        key = (profile.name, profile.org_identifier, profile.project_identifier)
+
+        if _provider is not None and _provider_key == key:
             return _provider
 
         if _provider is not None:
@@ -98,7 +144,7 @@ async def get_provider() -> PipelineProvider:
             await _close_stale_providers()
 
         _provider = HarnessClient(profile)
-        _provider_profile_name = profile.name
+        _provider_key = key
         return _provider
 
 
@@ -109,11 +155,11 @@ def reset_provider() -> None:
     :func:`get_provider` call (closing needs an event loop; this function
     stays sync for existing callers).
     """
-    global _provider, _provider_profile_name  # noqa: PLW0603
+    global _provider, _provider_key  # noqa: PLW0603
     if _provider is not None:
         _stale_providers.append(_provider)
     _provider = None
-    _provider_profile_name = None
+    _provider_key = None
 
 
 async def run_tool(
