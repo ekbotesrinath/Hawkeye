@@ -883,12 +883,21 @@ def _format_execution_table(
     executions: list[PipelineExecution],
     limit: int,
 ) -> str:
-    """Format a table of recent executions."""
+    """Format a table of recent executions.
+
+    The plan execution id is a column because it is the only identifier the
+    other tools accept. Without it the table is a dead end: a caller sees run
+    #4194, and ``hawkeye_get_execution``, ``hawkeye_get_execution_inputs`` and
+    ``hawkeye_get_all_stages`` all want a planExecutionId — Harness answers a
+    run sequence with "Plan Execution Summary does not exist". A person can
+    click through to the UI to recover it; a program reading this could not
+    get past the first hop, and every follow-up call failed.
+    """
     name = executions[0].pipeline_name if executions else pipeline_id
     lines = [
         f"## Recent Executions: {name} (last {limit})",
-        "| # | Status | Branch | Trigger | Duration | When |",
-        "|---|--------|--------|---------|----------|------|",
+        "| # | Execution | Status | Branch | Trigger | Duration | When |",
+        "|---|-----------|--------|--------|---------|----------|------|",
     ]
 
     for ex in executions:
@@ -898,7 +907,7 @@ def _format_execution_table(
         dur = format_duration_ms(ex.start_ts, ex.end_ts)
         when = format_relative_time(ex.start_ts)
         lines.append(
-            f"| {ex.run_sequence} | {icon} {ex.status.value}"
+            f"| {ex.run_sequence} | `{ex.plan_execution_id}` | {icon} {ex.status.value}"
             f" | {branch} | {trigger} | {dur} | {when} |"
         )
 
