@@ -13,3 +13,9 @@ graphify-out/
 
 # DFIN context symlink (local only, not tracked)
 .dfin-context
+
+# Local environment, logs and session state
+.env
+.env.*
+*.log
+CLAUDE_STATE.md
